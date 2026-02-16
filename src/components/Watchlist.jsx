@@ -423,8 +423,8 @@ function IndexScanner({ isMobile, onNavigate }) {
             Scanner wird initialisiert
           </div>
           <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 400, margin: "0 auto" }}>
-            Der Server scannt alle 5 Minuten einen Chunk von ~60 Symbolen.
-            Ein voller Scan-Zyklus dauert ca. 50 Minuten.
+            Der Server scannt alle 5 Minuten einen Chunk von ~40 Symbolen.
+            Ein voller Scan-Zyklus dauert ca. 70 Minuten.
             Ergebnisse erscheinen hier automatisch, sobald der erste Zyklus abgeschlossen ist.
           </div>
         </GlassCard>

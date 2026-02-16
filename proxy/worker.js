@@ -55,10 +55,10 @@ const DAX40_SYMBOLS = [
 const ALL_INDEX_SYMBOLS = [...SP500_SYMBOLS, ...DAX40_SYMBOLS];
 
 const SCAN_DEFAULTS = {
-  chunkSize: 60,
-  parallelBatch: 10,
-  threshold: 60,        // Minimum combined score to show in results
-  notifyThreshold: 70,  // Minimum combined score to trigger push notification
+  chunkSize: 40,         // Symbols per chunk (40 × 2 calls = 80 fetches, safe within 30s)
+  parallelBatch: 8,      // Parallel fetches per batch
+  threshold: 60,         // Minimum combined score to show in results
+  notifyThreshold: 70,   // Minimum combined score to trigger push notification
 };
 
 // ─── Constants & CORS ───
@@ -80,23 +80,28 @@ const USER_AGENT =
 
 // ─── Yahoo Finance Fetch ───
 
-async function fetchYahooJSON(symbol, params) {
+async function fetchYahooJSON(symbol, params, timeoutMs = 8000) {
   const searchParams = new URLSearchParams(params);
   let lastError = null;
 
   for (const host of YAHOO_HOSTS) {
     try {
       const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?${searchParams.toString()}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
       const resp = await fetch(url, {
         headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+        signal: controller.signal,
       });
+      clearTimeout(timer);
 
       if (resp.ok) {
         return await resp.json();
       }
       lastError = `${host} returned ${resp.status}`;
     } catch (e) {
-      lastError = `${host}: ${e.message}`;
+      lastError = `${host}: ${e.name === "AbortError" ? "timeout" : e.message}`;
     }
   }
 
@@ -476,6 +481,33 @@ async function runChunkedScan(env) {
   const totalChunks = Math.ceil(ALL_INDEX_SYMBOLS.length / chunkSize);
   const pointer = parseInt(await env.NCAPITAL_KV.get("scan:pointer") || "0", 10);
 
+  // Stuck-pointer detection: if same pointer runs 3+ times, force advance
+  const lastPointer = parseInt(await env.NCAPITAL_KV.get("scan:lastPointer") || "-1", 10);
+  const retryCount = parseInt(await env.NCAPITAL_KV.get("scan:retryCount") || "0", 10);
+
+  if (pointer === lastPointer) {
+    if (retryCount >= 2) {
+      // Stuck on this chunk — skip it and move on
+      console.log(`[Scan] Chunk ${pointer + 1}/${totalChunks} stuck after ${retryCount + 1} attempts. Skipping.`);
+      await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify([]), { expirationTtl: 7200 });
+      const skipNext = pointer + 1;
+      if (skipNext >= totalChunks) {
+        await mergeAndNotify(env, config, totalChunks);
+        await env.NCAPITAL_KV.put("scan:pointer", "0");
+        await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
+      } else {
+        await env.NCAPITAL_KV.put("scan:pointer", String(skipNext));
+      }
+      await env.NCAPITAL_KV.put("scan:retryCount", "0");
+      await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
+      return { chunk: pointer + 1, totalChunks, scanned: 0, skipped: true };
+    }
+    await env.NCAPITAL_KV.put("scan:retryCount", String(retryCount + 1));
+  } else {
+    await env.NCAPITAL_KV.put("scan:retryCount", "0");
+  }
+  await env.NCAPITAL_KV.put("scan:lastPointer", String(pointer));
+
   // Determine symbols for this chunk
   const start = pointer * chunkSize;
   const end = Math.min(start + chunkSize, ALL_INDEX_SYMBOLS.length);
@@ -483,9 +515,15 @@ async function runChunkedScan(env) {
 
   console.log(`[Scan] Chunk ${pointer + 1}/${totalChunks}: ${chunkSymbols.length} symbols (${chunkSymbols[0]}..${chunkSymbols[chunkSymbols.length - 1]})`);
 
-  // Scan in parallel batches
+  // Scan in parallel batches (with per-batch timeout safety)
   const results = [];
+  const scanStart = Date.now();
   for (let i = 0; i < chunkSymbols.length; i += parallelBatch) {
+    // Safety: if we've used >22s already, stop and save partial results
+    if (Date.now() - scanStart > 22000) {
+      console.log(`[Scan] Time limit approaching after ${results.length} symbols. Saving partial results.`);
+      break;
+    }
     const batch = chunkSymbols.slice(i, i + parallelBatch);
     const batchResults = await Promise.all(
       batch.map((sym) => scanSymbolServer(sym).catch((err) => errorResult(sym, err.message)))
@@ -737,11 +775,12 @@ async function handleScanRoutes(url, request, env) {
     const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
     const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
     const totalChunks = Math.ceil(ALL_INDEX_SYMBOLS.length / chunkSize);
-    const [pointer, lastRun, lastFullScan, stats] = await Promise.all([
+    const [pointer, lastRun, lastFullScan, stats, retryCount] = await Promise.all([
       env.NCAPITAL_KV.get("scan:pointer"),
       env.NCAPITAL_KV.get("scan:lastRun"),
       env.NCAPITAL_KV.get("scan:lastFullScan"),
       env.NCAPITAL_KV.get("scan:stats", "json"),
+      env.NCAPITAL_KV.get("scan:retryCount"),
     ]);
     return jsonResponse({
       currentChunk: parseInt(pointer || "0", 10),
@@ -753,7 +792,18 @@ async function handleScanRoutes(url, request, env) {
       lastFullScan,
       stats: stats || null,
       config,
+      retryCount: parseInt(retryCount || "0", 10),
     }, 200, 0);
+  }
+
+  // POST /api/scan/reset — reset scan pointer to 0
+  if (path === "/api/scan/reset" && request.method === "POST") {
+    await Promise.all([
+      env.NCAPITAL_KV.put("scan:pointer", "0"),
+      env.NCAPITAL_KV.put("scan:retryCount", "0"),
+      env.NCAPITAL_KV.put("scan:lastPointer", "-1"),
+    ]);
+    return jsonResponse({ ok: true, message: "Scan pointer reset to 0" });
   }
 
   // POST /api/scan/config — update scan thresholds
