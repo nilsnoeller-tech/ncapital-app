@@ -1,10 +1,10 @@
 // ─── Watchlist Component ───
-// Scanner fuer Swing- und Intraday-Setups mit Browser-Benachrichtigungen.
+// Scanner fuer Swing- und Intraday-Setups mit Web Push Benachrichtigungen.
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Zap, Bell, BellOff, RefreshCw, Plus, X, ChevronDown, ChevronUp, TrendingUp, Activity, AlertTriangle, CheckCircle, Trash2, Play, Search } from "lucide-react";
+import { Zap, Bell, BellOff, RefreshCw, Plus, X, ChevronDown, ChevronUp, TrendingUp, Activity, AlertTriangle, CheckCircle, Trash2, Play, Search, Smartphone, Send } from "lucide-react";
 import { scanWatchlist } from "../services/watchlistScanner";
-import { requestNotificationPermission, getNotificationStatus, checkAndNotify } from "../services/notifications";
+import { requestNotificationPermission, getNotificationStatus, checkAndNotify, subscribeToPush, unsubscribeFromPush, getPushSubscriptionStatus, syncWatchlistToServer, sendTestPush, getPushServerStatus } from "../services/notifications";
 
 // ── Colors (gleich wie TradingJournal) ──
 const C = {
@@ -87,8 +87,27 @@ export default function Watchlist({ onNavigate }) {
   const intervalRef = useRef(null);
   const isMobile = typeof window !== "undefined" && window.innerWidth < 600;
 
+  // ── Push State ──
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushLoading, setPushLoading] = useState(false);
+  const [serverStatus, setServerStatus] = useState(null);
+  const [testSending, setTestSending] = useState(false);
+
+  // Check Push-Status on mount
+  useEffect(() => {
+    getPushSubscriptionStatus().then(setPushEnabled).catch(() => {});
+    getPushServerStatus().then(setServerStatus).catch(() => {});
+  }, []);
+
   // Symbole speichern wenn sie sich aendern
   useEffect(() => { saveWatchlist(symbols); }, [symbols]);
+
+  // Sync watchlist to server when symbols change and push is enabled
+  useEffect(() => {
+    if (pushEnabled && symbols.length > 0) {
+      syncWatchlistToServer(symbols);
+    }
+  }, [symbols, pushEnabled]);
 
   // Auto-Refresh
   useEffect(() => {
@@ -118,7 +137,7 @@ export default function Watchlist({ onNavigate }) {
       saveCachedResults(scanResults);
       setLastScan(new Date());
 
-      // Benachrichtigungen pruefen
+      // Lokale Benachrichtigungen pruefen
       if (notificationsEnabled) {
         checkAndNotify(scanResults);
       }
@@ -135,6 +154,42 @@ export default function Watchlist({ onNavigate }) {
       setNotificationsEnabled(granted);
     } else {
       setNotificationsEnabled(false);
+    }
+  };
+
+  const togglePush = async () => {
+    setPushLoading(true);
+    try {
+      if (!pushEnabled) {
+        const sub = await subscribeToPush(symbols);
+        if (sub) {
+          setPushEnabled(true);
+          setNotificationsEnabled(true);
+          // Refresh server status
+          const status = await getPushServerStatus();
+          setServerStatus(status);
+        }
+      } else {
+        await unsubscribeFromPush();
+        setPushEnabled(false);
+        const status = await getPushServerStatus();
+        setServerStatus(status);
+      }
+    } catch (e) {
+      console.error("Push toggle error:", e);
+    } finally {
+      setPushLoading(false);
+    }
+  };
+
+  const handleTestPush = async () => {
+    setTestSending(true);
+    try {
+      await sendTestPush();
+    } catch (e) {
+      console.error("Test push error:", e);
+    } finally {
+      setTestSending(false);
     }
   };
 
@@ -185,16 +240,31 @@ export default function Watchlist({ onNavigate }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {/* Notifications Toggle */}
-            <button onClick={toggleNotifications} style={{
-              padding: "8px 14px", borderRadius: 10, border: `1px solid ${notificationsEnabled ? C.green : C.border}30`,
-              background: notificationsEnabled ? `${C.green}10` : "transparent", cursor: "pointer",
-              color: notificationsEnabled ? C.green : C.textDim, fontSize: 12, fontWeight: 600,
+            {/* Push Notifications Toggle */}
+            <button onClick={togglePush} disabled={pushLoading} style={{
+              padding: "8px 14px", borderRadius: 10, border: `1px solid ${pushEnabled ? C.green : C.border}30`,
+              background: pushEnabled ? `${C.green}10` : "transparent", cursor: pushLoading ? "wait" : "pointer",
+              color: pushEnabled ? C.green : C.textDim, fontSize: 12, fontWeight: 600,
               display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s",
+              opacity: pushLoading ? 0.6 : 1,
             }}>
-              {notificationsEnabled ? <Bell size={14} /> : <BellOff size={14} />}
-              {notificationsEnabled ? "Alerts An" : "Alerts"}
+              {pushEnabled ? <Smartphone size={14} /> : <BellOff size={14} />}
+              {pushLoading ? "..." : pushEnabled ? "Push An" : "Push"}
             </button>
+
+            {/* Test Push Button (only when push is enabled) */}
+            {pushEnabled && (
+              <button onClick={handleTestPush} disabled={testSending} style={{
+                padding: "8px 14px", borderRadius: 10, border: `1px solid ${C.blue}30`,
+                background: "transparent", cursor: testSending ? "wait" : "pointer",
+                color: C.blue, fontSize: 12, fontWeight: 600,
+                display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s",
+                opacity: testSending ? 0.6 : 1,
+              }}>
+                <Send size={13} />
+                Test
+              </button>
+            )}
 
             {/* Auto-Refresh Toggle */}
             <button onClick={() => setAutoRefresh(!autoRefresh)} style={{
@@ -226,6 +296,23 @@ export default function Watchlist({ onNavigate }) {
             </button>
           </div>
         </div>
+
+        {/* Push Status Info */}
+        {pushEnabled && serverStatus && (
+          <div style={{
+            marginTop: 12, padding: "8px 12px", borderRadius: 8,
+            background: `${C.green}08`, border: `1px solid ${C.green}15`,
+            fontSize: 11, color: C.textMuted, display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <Smartphone size={12} color={C.green} />
+            <span>Server-Scan aktiv · Cron alle 15 Min (Mo-Fr 08-21 UTC)</span>
+            {serverStatus.lastRun && (
+              <span style={{ color: C.textDim }}>
+                · Letzter Server-Scan: {new Date(serverStatus.lastRun).toLocaleTimeString("de-DE")}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Progress Bar */}
         {scanning && (

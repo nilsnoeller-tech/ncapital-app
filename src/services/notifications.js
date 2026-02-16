@@ -1,9 +1,11 @@
-// ─── Browser Notification Service ───
-// Sendet lokale Browser-Benachrichtigungen bei interessanten Watchlist-Signalen.
-// Kein Backend noetig — nutzt die Notification API direkt.
+// ─── Notification Service ───
+// Lokale Browser-Benachrichtigungen + Web Push Subscription Management.
 
+const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 Stunde pro Symbol
 const notifiedRecently = new Map();
+
+// ─── Local Notification API (unchanged) ───
 
 export async function requestNotificationPermission() {
   if (!("Notification" in window)) return false;
@@ -67,5 +69,109 @@ export function checkAndNotify(scanResults, thresholds = { swing: 70, intraday: 
         `intraday-${displaySymbol}`
       );
     }
+  }
+}
+
+// ─── Web Push Subscription Management ───
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+async function getVapidPublicKey() {
+  const resp = await fetch(`${PROXY_BASE}/api/push/vapid-public-key`);
+  const data = await resp.json();
+  return data.key;
+}
+
+export async function subscribeToPush(symbols, thresholds) {
+  // 1. Request notification permission first
+  const granted = await requestNotificationPermission();
+  if (!granted) return null;
+
+  // 2. Get VAPID key from server
+  const vapidKey = await getVapidPublicKey();
+
+  // 3. Subscribe via Push Manager
+  const registration = await navigator.serviceWorker.ready;
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(vapidKey),
+  });
+
+  // 4. Send subscription + watchlist to server
+  await fetch(`${PROXY_BASE}/api/push/subscribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      subscription: subscription.toJSON(),
+      symbols: symbols || [],
+      thresholds: thresholds || { swing: 70, intraday: 75 },
+    }),
+  });
+
+  return subscription;
+}
+
+export async function unsubscribeFromPush() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      await subscription.unsubscribe();
+    }
+    await fetch(`${PROXY_BASE}/api/push/unsubscribe`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  } catch (e) {
+    console.warn("Unsubscribe failed:", e);
+  }
+}
+
+export async function getPushSubscriptionStatus() {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    return !!subscription;
+  } catch {
+    return false;
+  }
+}
+
+export async function syncWatchlistToServer(symbols, thresholds) {
+  try {
+    await fetch(`${PROXY_BASE}/api/push/watchlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbols,
+        thresholds: thresholds || { swing: 70, intraday: 75 },
+      }),
+    });
+  } catch (e) {
+    console.warn("Watchlist sync failed:", e);
+  }
+}
+
+export async function sendTestPush() {
+  try {
+    const resp = await fetch(`${PROXY_BASE}/api/push/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    return await resp.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+export async function getPushServerStatus() {
+  try {
+    const resp = await fetch(`${PROXY_BASE}/api/push/status`);
+    return await resp.json();
+  } catch (e) {
+    return { error: e.message };
   }
 }
