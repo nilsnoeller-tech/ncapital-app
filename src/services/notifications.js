@@ -88,9 +88,11 @@ async function getVapidPublicKey() {
 }
 
 export async function subscribeToPush(symbols, thresholds) {
-  // 1. Request notification permission first
-  const granted = await requestNotificationPermission();
-  if (!granted) return null;
+  // 1. Ensure notification permission (caller should request first for user-gesture context)
+  if (Notification.permission !== "granted") {
+    const granted = await requestNotificationPermission();
+    if (!granted) return null;
+  }
 
   // 2. Get VAPID key from server
   const vapidKey = await getVapidPublicKey();

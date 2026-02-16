@@ -161,6 +161,13 @@ export default function Watchlist({ onNavigate }) {
     setPushLoading(true);
     try {
       if (!pushEnabled) {
+        // Request notification permission FIRST (must be in direct click handler)
+        const granted = await requestNotificationPermission();
+        if (!granted) {
+          console.warn("Notification permission denied");
+          setPushLoading(false);
+          return;
+        }
         const sub = await subscribeToPush(symbols);
         if (sub) {
           setPushEnabled(true);
