@@ -150,7 +150,11 @@ function computePortfolio(tradeList, startkapital) {
     const fx2 = t.waehrung === "USD" && t.wechselkurs ? t.wechselkurs : 1;
     return s + risk * fx2;
   }, 0);
-  const roiPct = ((kapital - startkapital) / startkapital) * 100;
+  // ROI: Durchschnittliche Rendite aller abgeschlossenen Trades (gewichtet nach Volumen)
+  const totalVolume = closedTrades.reduce((s, t) => s + (t.avgKaufkurs * t.totalSold * (t.fx || 1)), 0);
+  const roiPct = totalVolume > 0
+    ? (closedTrades.reduce((s, t) => s + t.pnl, 0) / totalVolume) * 100
+    : 0;
 
   const monthMap = {};
   const monthNames = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
@@ -1776,6 +1780,10 @@ export default function TradingJournal() {
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @supports (padding-top: env(safe-area-inset-top)) {
+          .nc-safe-header { padding-top: calc(env(safe-area-inset-top) + 14px) !important; }
+          .nc-safe-menu { padding-top: calc(env(safe-area-inset-top) + 24px) !important; }
+        }
       `}</style>
 
       {/* Offline-Banner */}
@@ -1822,7 +1830,7 @@ export default function TradingJournal() {
       {/* Mobile Menu Overlay */}
       {isMobile && menuOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(8px)" }} onClick={() => setMenuOpen(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ width: 260, height: "100%", background: "linear-gradient(180deg, rgba(20,24,32,0.99), rgba(11,14,17,0.99))", padding: "24px 16px", paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)", display: "flex", flexDirection: "column" }}>
+          <div onClick={e => e.stopPropagation()} className="nc-safe-menu" style={{ width: 260, height: "100%", background: "linear-gradient(180deg, rgba(20,24,32,0.99), rgba(11,14,17,0.99))", padding: "24px 16px", display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1853,7 +1861,7 @@ export default function TradingJournal() {
 
       {/* Main */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div style={{ padding: isMobile ? "14px 16px" : "18px 32px", paddingTop: isMobile ? "calc(env(safe-area-inset-top, 0px) + 14px)" : "18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(20,24,32,0.6)", backdropFilter: "blur(20px)", position: "sticky", top: 0, zIndex: 10 }}>
+        <div className={isMobile ? "nc-safe-header" : ""} style={{ padding: isMobile ? "14px 16px" : "18px 32px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(20,24,32,0.6)", backdropFilter: "blur(20px)", position: "sticky", top: 0, zIndex: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {isMobile && (
               <button onClick={() => setMenuOpen(true)} style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", padding: 4 }}>
