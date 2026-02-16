@@ -374,15 +374,16 @@ async function scanSymbolServer(symbol) {
 
 async function sendPush(subscription, payload, env) {
   try {
+    const privateJWK = JSON.parse(env.VAPID_PRIVATE_JWK);
+
     const { headers, body, endpoint } = await buildPushHTTPRequest({
-      applicationServerKeys: {
-        public: env.VAPID_PUBLIC_KEY,
-        private: env.VAPID_PRIVATE_KEY,
+      privateJWK,
+      subscription,
+      message: {
+        payload,
+        adminContact: "mailto:nils@ncapital.app",
+        options: { ttl: 3600 },
       },
-      payload: JSON.stringify(payload),
-      target: subscription,
-      adminContact: "mailto:nils@ncapital.app",
-      ttl: 3600,
     });
 
     const resp = await fetch(endpoint, { method: "POST", headers, body });
