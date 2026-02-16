@@ -166,9 +166,10 @@ export default function Watchlist({ onNavigate }) {
     return 0;
   });
 
-  const openTradeCheck = (symbol) => {
-    // Symbol in localStorage speichern fuer TradeCheck
+  const openTradeCheck = (symbol, currency) => {
+    // Symbol + Waehrung in localStorage speichern fuer TradeCheck
     localStorage.setItem("ncapital-prefill-symbol", symbol);
+    if (currency) localStorage.setItem("ncapital-prefill-currency", currency);
     if (onNavigate) onNavigate("check");
   };
 
@@ -429,7 +430,7 @@ export default function Watchlist({ onNavigate }) {
 
                     {/* Action Buttons */}
                     <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-                      <button onClick={() => openTradeCheck(r.displaySymbol)} style={{
+                      <button onClick={() => openTradeCheck(r.displaySymbol, r.currency === "EUR" ? "EUR" : "USD")} style={{
                         padding: "8px 16px", borderRadius: 8, border: "none",
                         background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`,
                         color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer",

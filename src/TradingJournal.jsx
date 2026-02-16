@@ -508,6 +508,17 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   // ── Auto-Score Integration ──
   const { autoScores, loading: autoLoading, error: autoError, dataTimestamp, staleData, marketData, computeAutoScores, resetAutoScores } = useAutoScore();
 
+  // ── Prefill from Watchlist ──
+  useEffect(() => {
+    const prefill = localStorage.getItem("ncapital-prefill-symbol");
+    if (prefill) {
+      localStorage.removeItem("ncapital-prefill-symbol");
+      const currency = localStorage.getItem("ncapital-prefill-currency") || "EUR";
+      localStorage.removeItem("ncapital-prefill-currency");
+      setInputs(prev => ({ ...prev, symbol: prefill, waehrung: currency }));
+    }
+  }, []);
+
   // ── Symbol-Historie ──
   const symbolHistory = useMemo(() => {
     const sym = inputs.symbol.toUpperCase().trim();
