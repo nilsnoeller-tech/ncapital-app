@@ -103,14 +103,14 @@ function ResultsTable({ results, isMobile, sortBy, setSortBy, expandedRow, setEx
         </div>}
         {showCombined && (
           <div style={{ textAlign: "center", cursor: "pointer" }} onClick={() => setSortBy("combined")}>
-            {isMobile ? "C" : "Kombi"} {sortBy === "combined" ? "▼" : ""}
+            {isMobile ? "Comb" : "Combined"} {sortBy === "combined" ? "▼" : ""}
           </div>
         )}
         <div style={{ textAlign: "center", cursor: "pointer" }} onClick={() => setSortBy("swing")}>
           {isMobile ? "Sw" : "Swing"} {sortBy === "swing" ? "▼" : ""}
         </div>
         <div style={{ textAlign: "center", cursor: "pointer" }} onClick={() => setSortBy("intraday")}>
-          {isMobile ? "ID" : "Intra"} {sortBy === "intraday" ? "▼" : ""}
+          {isMobile ? "Intra" : "Intraday"} {sortBy === "intraday" ? "▼" : ""}
         </div>
         {!isMobile && <div>Signal</div>}
       </div>
