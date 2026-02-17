@@ -320,7 +320,12 @@ function IndexScanner({ isMobile, onNavigate }) {
               Index Scanner
             </div>
             <div style={{ fontSize: 12, color: C.textMuted, marginTop: 4 }}>
-              {status ? `${status.sp500Count} S&P 500 + ${status.dax40Count} DAX · ` : ""}
+              {status ? (
+                status.scanMode === "dax-only" ? `${status.dax40Count} DAX · ` :
+                status.scanMode === "sp500-only" ? `${status.sp500Count} S&P 500 · ` :
+                status.scanMode === "both" ? `${status.sp500Count} S&P 500 + ${status.dax40Count} DAX · ` :
+                status.scanMode === "closed" ? "Markt geschlossen · " : ""
+              ) : ""}
               {results.length > 0 ? `${results.length} Setups gefunden` : loading ? "Lade..." : "Warte auf ersten Scan-Zyklus..."}
             </div>
           </div>
@@ -375,9 +380,10 @@ function IndexScanner({ isMobile, onNavigate }) {
                   animation: "pulse 2s ease-in-out infinite",
                 }} />
                 <span>
-                  Chunk {status.currentChunk + 1}/{status.totalChunks}
+                  {status.scanMode === "dax-only" ? "DAX 40" : status.scanMode === "sp500-only" ? "S&P 500" : status.scanMode === "both" ? "DAX + S&P 500" : status.scanMode === "closed" ? "Markt geschlossen" : ""}
+                  {status.scanMode !== "closed" && ` · Chunk ${status.currentChunk + 1}/${status.totalChunks}`}
                   {" · "}{status.totalSymbols} Symbole
-                  {" · "}Cron alle 5 Min (Mo-Fr 08-21 UTC)
+                  {" · "}Cron alle 5 Min
                 </span>
               </div>
               <div>
@@ -423,9 +429,9 @@ function IndexScanner({ isMobile, onNavigate }) {
             Scanner wird initialisiert
           </div>
           <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 400, margin: "0 auto" }}>
-            Der Server scannt alle 5 Minuten einen Chunk von ~40 Symbolen.
-            Ein voller Scan-Zyklus dauert ca. 70 Minuten.
-            Ergebnisse erscheinen hier automatisch, sobald der erste Zyklus abgeschlossen ist.
+            Der Server scannt automatisch nach Boersenzeiten:
+            DAX 08:30-20:00 Uhr, S&P 500 15:00-23:00 Uhr.
+            Ergebnisse erscheinen hier automatisch.
           </div>
         </GlassCard>
       )}

@@ -460,8 +460,28 @@ async function sendPush(subscription, payload, env) {
   }
 }
 
+// ─── Time-Based Symbol Selection ───
+// DAX 40:   07:30–19:00 UTC (08:30–20:00 DE)
+// S&P 500:  14:00–22:00 UTC (15:00–23:00 DE)
+// Overlap:  14:00–19:00 UTC (15:00–20:00 DE) → both markets
+
+function getActiveSymbols() {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  const utcMinute = now.getUTCMinutes();
+  const timeDecimal = utcHour + utcMinute / 60;
+
+  const daxActive = timeDecimal >= 7.5 && timeDecimal < 19;   // 07:30–18:59 UTC
+  const spActive  = timeDecimal >= 14  && timeDecimal < 22;   // 14:00–21:59 UTC
+
+  if (daxActive && spActive) return { symbols: [...SP500_SYMBOLS, ...DAX40_SYMBOLS], mode: "both" };
+  if (daxActive)             return { symbols: [...DAX40_SYMBOLS], mode: "dax-only" };
+  if (spActive)              return { symbols: [...SP500_SYMBOLS], mode: "sp500-only" };
+  return { symbols: [], mode: "closed" };
+}
+
 // ─── Chunked Index Scanner (State Machine) ───
-// Scans ALL_INDEX_SYMBOLS in chunks of ~60 per cron invocation.
+// Scans active symbols in chunks per cron invocation.
 // After the last chunk, merges results, filters by score, sends push notifications.
 
 function errorResult(sym, errMsg) {
@@ -475,20 +495,67 @@ function errorResult(sym, errMsg) {
 }
 
 async function runChunkedScan(env) {
+  // 1. Determine which symbols to scan based on current time
+  const { symbols: activeSymbols, mode: currentMode } = getActiveSymbols();
+
+  // 2. Market closed — nothing to do
+  if (currentMode === "closed" || activeSymbols.length === 0) {
+    console.log(`[Scan] Market closed. Skipping.`);
+    await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
+    return { chunk: 0, totalChunks: 0, scanned: 0, mode: "closed" };
+  }
+
+  // 3. Load config and compute chunking for active symbols
   const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
   const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
   const parallelBatch = config.parallelBatch || SCAN_DEFAULTS.parallelBatch;
-  const totalChunks = Math.ceil(ALL_INDEX_SYMBOLS.length / chunkSize);
-  const pointer = parseInt(await env.NCAPITAL_KV.get("scan:pointer") || "0", 10);
+  const totalChunks = Math.ceil(activeSymbols.length / chunkSize);
 
-  // Stuck-pointer detection: if same pointer runs 3+ times, force advance
+  // 4. Load previous mode from KV
+  const prevModeData = await env.NCAPITAL_KV.get("scan:mode", "json");
+  const prevMode = prevModeData?.mode || null;
+
+  // 5. Load pointer
+  let pointer = parseInt(await env.NCAPITAL_KV.get("scan:pointer") || "0", 10);
+
+  // 6. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
+  if (prevMode !== null && prevMode !== currentMode) {
+    console.log(`[Scan] Mode transition: ${prevMode} -> ${currentMode}. Resetting cycle.`);
+
+    // Merge partial results from previous cycle if any chunks were completed
+    if (pointer > 0 && prevModeData?.totalChunks) {
+      console.log(`[Scan] Merging partial results (${pointer}/${prevModeData.totalChunks} chunks from ${prevMode}).`);
+      await mergeAndNotify(env, config, pointer);
+      await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
+    }
+
+    // Clean stale chunk keys from previous mode
+    const prevChunks = prevModeData?.totalChunks || 0;
+    for (let i = 0; i < prevChunks; i++) {
+      await env.NCAPITAL_KV.delete(`scan:chunk:${i}`);
+    }
+
+    // Reset pointer for new mode
+    pointer = 0;
+    await env.NCAPITAL_KV.put("scan:pointer", "0");
+    await env.NCAPITAL_KV.put("scan:retryCount", "0");
+    await env.NCAPITAL_KV.put("scan:lastPointer", "-1");
+  }
+
+  // 7. Save current mode info to KV
+  await env.NCAPITAL_KV.put("scan:mode", JSON.stringify({
+    mode: currentMode,
+    totalChunks,
+    totalSymbols: activeSymbols.length,
+  }));
+
+  // 8. Stuck-pointer detection: if same pointer runs 3+ times, force advance
   const lastPointer = parseInt(await env.NCAPITAL_KV.get("scan:lastPointer") || "-1", 10);
   const retryCount = parseInt(await env.NCAPITAL_KV.get("scan:retryCount") || "0", 10);
 
   if (pointer === lastPointer) {
     if (retryCount >= 2) {
-      // Stuck on this chunk — skip it and move on
-      console.log(`[Scan] Chunk ${pointer + 1}/${totalChunks} stuck after ${retryCount + 1} attempts. Skipping.`);
+      console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks} stuck after ${retryCount + 1} attempts. Skipping.`);
       await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify([]), { expirationTtl: 7200 });
       const skipNext = pointer + 1;
       if (skipNext >= totalChunks) {
@@ -500,7 +567,7 @@ async function runChunkedScan(env) {
       }
       await env.NCAPITAL_KV.put("scan:retryCount", "0");
       await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
-      return { chunk: pointer + 1, totalChunks, scanned: 0, skipped: true };
+      return { chunk: pointer + 1, totalChunks, scanned: 0, skipped: true, mode: currentMode };
     }
     await env.NCAPITAL_KV.put("scan:retryCount", String(retryCount + 1));
   } else {
@@ -508,18 +575,17 @@ async function runChunkedScan(env) {
   }
   await env.NCAPITAL_KV.put("scan:lastPointer", String(pointer));
 
-  // Determine symbols for this chunk
+  // 9. Determine symbols for this chunk from activeSymbols
   const start = pointer * chunkSize;
-  const end = Math.min(start + chunkSize, ALL_INDEX_SYMBOLS.length);
-  const chunkSymbols = ALL_INDEX_SYMBOLS.slice(start, end);
+  const end = Math.min(start + chunkSize, activeSymbols.length);
+  const chunkSymbols = activeSymbols.slice(start, end);
 
-  console.log(`[Scan] Chunk ${pointer + 1}/${totalChunks}: ${chunkSymbols.length} symbols (${chunkSymbols[0]}..${chunkSymbols[chunkSymbols.length - 1]})`);
+  console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks}: ${chunkSymbols.length} symbols (${chunkSymbols[0]}..${chunkSymbols[chunkSymbols.length - 1]})`);
 
-  // Scan in parallel batches (with per-batch timeout safety)
+  // 10. Scan in parallel batches (with per-batch timeout safety)
   const results = [];
   const scanStart = Date.now();
   for (let i = 0; i < chunkSymbols.length; i += parallelBatch) {
-    // Safety: if we've used >22s already, stop and save partial results
     if (Date.now() - scanStart > 22000) {
       console.log(`[Scan] Time limit approaching after ${results.length} symbols. Saving partial results.`);
       break;
@@ -531,14 +597,14 @@ async function runChunkedScan(env) {
     results.push(...batchResults);
   }
 
-  // Write chunk results to KV (TTL 2h)
+  // 11. Write chunk results to KV (TTL 2h)
   await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify(results), { expirationTtl: 7200 });
 
+  // 12. Advance pointer or merge
   const nextPointer = pointer + 1;
 
   if (nextPointer >= totalChunks) {
-    // Last chunk done — merge all results + notify
-    console.log(`[Scan] All ${totalChunks} chunks done. Merging...`);
+    console.log(`[Scan] [${currentMode}] All ${totalChunks} chunks done. Merging...`);
     await mergeAndNotify(env, config, totalChunks);
     await env.NCAPITAL_KV.put("scan:pointer", "0");
     await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
@@ -548,7 +614,7 @@ async function runChunkedScan(env) {
 
   await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
 
-  return { chunk: pointer + 1, totalChunks, scanned: results.length };
+  return { chunk: pointer + 1, totalChunks, scanned: results.length, mode: currentMode };
 }
 
 async function mergeAndNotify(env, config, totalChunks) {
@@ -770,11 +836,14 @@ async function handleScanRoutes(url, request, env) {
     return jsonResponse({ results, lastFullScan, count: results.length }, 200, 60);
   }
 
-  // GET /api/scan/status — scan progress info
+  // GET /api/scan/status — scan progress info (mode-aware)
   if (path === "/api/scan/status" && request.method === "GET") {
     const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
+    const { mode: liveMode, symbols: liveSymbols } = getActiveSymbols();
+    const modeData = await env.NCAPITAL_KV.get("scan:mode", "json");
     const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
-    const totalChunks = Math.ceil(ALL_INDEX_SYMBOLS.length / chunkSize);
+    const totalChunks = modeData?.totalChunks || Math.ceil(liveSymbols.length / chunkSize);
+
     const [pointer, lastRun, lastFullScan, stats, retryCount] = await Promise.all([
       env.NCAPITAL_KV.get("scan:pointer"),
       env.NCAPITAL_KV.get("scan:lastRun"),
@@ -785,9 +854,11 @@ async function handleScanRoutes(url, request, env) {
     return jsonResponse({
       currentChunk: parseInt(pointer || "0", 10),
       totalChunks,
-      totalSymbols: ALL_INDEX_SYMBOLS.length,
+      totalSymbols: modeData?.totalSymbols || liveSymbols.length,
       sp500Count: SP500_SYMBOLS.length,
       dax40Count: DAX40_SYMBOLS.length,
+      scanMode: modeData?.mode || liveMode,
+      liveMode,
       lastRun,
       lastFullScan,
       stats: stats || null,
@@ -796,14 +867,15 @@ async function handleScanRoutes(url, request, env) {
     }, 200, 0);
   }
 
-  // POST /api/scan/reset — reset scan pointer to 0
+  // POST /api/scan/reset — reset scan pointer + mode
   if (path === "/api/scan/reset" && request.method === "POST") {
     await Promise.all([
       env.NCAPITAL_KV.put("scan:pointer", "0"),
       env.NCAPITAL_KV.put("scan:retryCount", "0"),
       env.NCAPITAL_KV.put("scan:lastPointer", "-1"),
+      env.NCAPITAL_KV.delete("scan:mode"),
     ]);
-    return jsonResponse({ ok: true, message: "Scan pointer reset to 0" });
+    return jsonResponse({ ok: true, message: "Scan pointer and mode reset" });
   }
 
   // POST /api/scan/config — update scan thresholds
