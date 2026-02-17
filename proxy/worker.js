@@ -126,22 +126,97 @@ const PRESIDENTIAL_CYCLE = {
 
 // Key recurring events (approximate dates, month-based)
 const RECURRING_EVENTS_2026 = [
-  { month: 1, day: 29, name: "FOMC-Sitzung", type: "fed" },
-  { month: 3, day: 19, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
-  { month: 3, day: 20, name: "Triple Witching (Grosser Verfall)", type: "options" },
-  { month: 4, day: 14, name: "Earnings Season Q1 startet", type: "earnings" },
-  { month: 5, day: 6, name: "FOMC-Sitzung", type: "fed" },
-  { month: 6, day: 17, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
-  { month: 6, day: 19, name: "Triple Witching", type: "options" },
-  { month: 7, day: 14, name: "Earnings Season Q2 startet", type: "earnings" },
-  { month: 7, day: 29, name: "FOMC-Sitzung", type: "fed" },
-  { month: 9, day: 16, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
-  { month: 9, day: 18, name: "Triple Witching", type: "options" },
-  { month: 10, day: 13, name: "Earnings Season Q3 startet", type: "earnings" },
-  { month: 10, day: 28, name: "FOMC-Sitzung", type: "fed" },
-  { month: 11, day: 3, name: "US Midterm Elections", type: "political" },
-  { month: 12, day: 16, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
-  { month: 12, day: 18, name: "Triple Witching", type: "options" },
+  // ── FOMC-Sitzungen (8x/Jahr) ──
+  { month: 1, day: 29, name: "FOMC-Sitzung", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheidung der US-Notenbank. Bestimmt Richtung fuer alle Asset-Klassen." },
+  { month: 3, day: 18, name: "FOMC + Dot Plot", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheid mit Projektionen. Dot Plot zeigt erwarteten Zinspfad der Fed-Mitglieder." },
+  { month: 5, day: 6, name: "FOMC-Sitzung", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheidung der US-Notenbank." },
+  { month: 6, day: 17, name: "FOMC + Dot Plot", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheid mit aktualisierten Wirtschaftsprojektionen und Dot Plot." },
+  { month: 7, day: 29, name: "FOMC-Sitzung", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheidung der US-Notenbank." },
+  { month: 9, day: 16, name: "FOMC + Dot Plot", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheid mit Projektionen — oft richtungsweisend fuer Q4." },
+  { month: 10, day: 28, name: "FOMC-Sitzung", type: "fed", impact: "high", impactScore: 3, description: "Zinsentscheidung der US-Notenbank." },
+  { month: 12, day: 16, name: "FOMC + Dot Plot", type: "fed", impact: "high", impactScore: 3, description: "Letzte Sitzung des Jahres mit Projektionen fuer 2027." },
+
+  // ── FOMC-Protokolle (Minutes, ~3 Wochen nach Sitzung) ──
+  { month: 2, day: 19, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Detailliertes Protokoll der Januar-Sitzung. Gibt Einblick in interne Debatten." },
+  { month: 4, day: 9, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Maerz-Sitzung mit Dot-Plot-Diskussion." },
+  { month: 5, day: 28, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Mai-Sitzung." },
+  { month: 7, day: 9, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Juni-Sitzung mit Projektionen." },
+  { month: 8, day: 20, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Juli-Sitzung." },
+  { month: 10, day: 8, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der September-Sitzung." },
+  { month: 11, day: 19, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Oktober-Sitzung." },
+
+  // ── EZB-Zinsentscheide (8x/Jahr) ──
+  { month: 1, day: 30, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB. Direkte Auswirkung auf DAX und EUR/USD." },
+  { month: 3, day: 6, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "EZB-Zinsentscheid mit neuen Stabsprojektionen." },
+  { month: 4, day: 17, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB." },
+  { month: 6, day: 5, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "EZB-Zinsentscheid mit aktualisierten Projektionen." },
+  { month: 7, day: 24, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB." },
+  { month: 9, day: 11, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "EZB-Zinsentscheid mit neuen Stabsprojektionen." },
+  { month: 10, day: 30, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB." },
+  { month: 12, day: 18, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Letzte EZB-Sitzung des Jahres mit Projektionen." },
+
+  // ── US CPI / Inflation (monatlich, ca. 10.-15. des Folgemonats) ──
+  { month: 1, day: 15, name: "US CPI (Dez)", type: "data", impact: "high", impactScore: 3, description: "Verbraucherpreisindex USA. Wichtigster Inflationsindikator, bestimmt Fed-Politik." },
+  { month: 2, day: 12, name: "US CPI (Jan)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten. Kernrate (ex Food & Energy) besonders beachtet." },
+  { month: 3, day: 12, name: "US CPI (Feb)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten — vor FOMC-Sitzung besonders wichtig." },
+  { month: 4, day: 10, name: "US CPI (Mrz)", type: "data", impact: "high", impactScore: 3, description: "Verbraucherpreisindex USA." },
+  { month: 5, day: 13, name: "US CPI (Apr)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten." },
+  { month: 6, day: 11, name: "US CPI (Mai)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten — vor FOMC + Dot Plot besonders relevant." },
+  { month: 7, day: 15, name: "US CPI (Jun)", type: "data", impact: "high", impactScore: 3, description: "Verbraucherpreisindex USA." },
+  { month: 8, day: 12, name: "US CPI (Jul)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten." },
+  { month: 9, day: 10, name: "US CPI (Aug)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten — vor FOMC + Dot Plot." },
+  { month: 10, day: 14, name: "US CPI (Sep)", type: "data", impact: "high", impactScore: 3, description: "Verbraucherpreisindex USA." },
+  { month: 11, day: 12, name: "US CPI (Okt)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten." },
+  { month: 12, day: 10, name: "US CPI (Nov)", type: "data", impact: "high", impactScore: 3, description: "US-Inflationsdaten — vor letzter FOMC-Sitzung des Jahres." },
+
+  // ── Non-Farm Payrolls (erster Freitag des Monats) ──
+  { month: 1, day: 10, name: "Non-Farm Payrolls (Dez)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht. Staerkster Marktbeweger neben CPI. Beeinflusst Fed-Zinspfad." },
+  { month: 2, day: 6, name: "Non-Farm Payrolls (Jan)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten — Beschaeftigung, Arbeitslosenquote, Stundenlohn." },
+  { month: 3, day: 6, name: "Non-Farm Payrolls (Feb)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht." },
+  { month: 4, day: 3, name: "Non-Farm Payrolls (Mrz)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten." },
+  { month: 5, day: 8, name: "Non-Farm Payrolls (Apr)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht." },
+  { month: 6, day: 5, name: "Non-Farm Payrolls (Mai)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten." },
+  { month: 7, day: 2, name: "Non-Farm Payrolls (Jun)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht." },
+  { month: 8, day: 7, name: "Non-Farm Payrolls (Jul)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten." },
+  { month: 9, day: 4, name: "Non-Farm Payrolls (Aug)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht." },
+  { month: 10, day: 2, name: "Non-Farm Payrolls (Sep)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten." },
+  { month: 11, day: 6, name: "Non-Farm Payrolls (Okt)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktbericht." },
+  { month: 12, day: 4, name: "Non-Farm Payrolls (Nov)", type: "data", impact: "high", impactScore: 3, description: "US-Arbeitsmarktdaten." },
+
+  // ── ISM Manufacturing PMI (erster Geschaeftstag des Monats) ──
+  { month: 1, day: 3, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex Industrie. Ueber 50 = Expansion, unter 50 = Kontraktion." },
+  { month: 2, day: 3, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 3, day: 2, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 4, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 5, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 6, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 7, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 8, day: 3, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 9, day: 2, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 10, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 11, day: 2, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+  { month: 12, day: 1, name: "ISM Manufacturing PMI", type: "data", impact: "medium", impactScore: 2, description: "Einkaufsmanagerindex US-Industrie." },
+
+  // ── US BIP / GDP (quartalsweise, vorlaeufig) ──
+  { month: 1, day: 30, name: "US BIP Q4 (vorlaeufig)", type: "data", impact: "medium", impactScore: 2, description: "Bruttoinlandsprodukt USA. Zeigt wirtschaftliches Wachstum oder Rezessionsrisiko." },
+  { month: 4, day: 29, name: "US BIP Q1 (vorlaeufig)", type: "data", impact: "medium", impactScore: 2, description: "Vorlaeufige Schaetzung des US-Wirtschaftswachstums Q1." },
+  { month: 7, day: 30, name: "US BIP Q2 (vorlaeufig)", type: "data", impact: "medium", impactScore: 2, description: "Vorlaeufige Schaetzung des US-Wirtschaftswachstums Q2." },
+  { month: 10, day: 29, name: "US BIP Q3 (vorlaeufig)", type: "data", impact: "medium", impactScore: 2, description: "Vorlaeufige Schaetzung des US-Wirtschaftswachstums Q3." },
+
+  // ── Triple Witching / Grosser Verfall (3. Freitag im Quartal) ──
+  { month: 3, day: 20, name: "Triple Witching (Grosser Verfall)", type: "options", impact: "high", impactScore: 3, description: "Verfall von Index-Optionen, Aktienoptionen und Futures. Erhoehte Volatilitaet und Volumen." },
+  { month: 6, day: 19, name: "Triple Witching", type: "options", impact: "high", impactScore: 3, description: "Quartalsweiser Optionsverfall. Hohes Volumen und moegliche Gamma-Moves." },
+  { month: 9, day: 18, name: "Triple Witching", type: "options", impact: "high", impactScore: 3, description: "Quartalsweiser Optionsverfall." },
+  { month: 12, day: 18, name: "Triple Witching", type: "options", impact: "high", impactScore: 3, description: "Letzter grosser Verfall des Jahres. Oft erhoehte Volatilitaet." },
+
+  // ── Earnings Season (Beginn, ~2 Wochen nach Quartalsende) ──
+  { month: 1, day: 14, name: "Earnings Season Q4 startet", type: "earnings", impact: "medium", impactScore: 2, description: "Start der Q4-Berichtssaison. Grosse US-Banken berichten zuerst." },
+  { month: 4, day: 14, name: "Earnings Season Q1 startet", type: "earnings", impact: "medium", impactScore: 2, description: "Start der Q1-Berichtssaison. Bankensektor + Tech im Fokus." },
+  { month: 7, day: 14, name: "Earnings Season Q2 startet", type: "earnings", impact: "medium", impactScore: 2, description: "Start der Q2-Berichtssaison." },
+  { month: 10, day: 13, name: "Earnings Season Q3 startet", type: "earnings", impact: "medium", impactScore: 2, description: "Start der Q3-Berichtssaison." },
+
+  // ── Politische Events ──
+  { month: 11, day: 3, name: "US Midterm Elections", type: "political", impact: "high", impactScore: 3, description: "Kongresswahlen. Historisch starke Rally ab dem Tiefpunkt vor Midterms." },
 ];
 
 const SCAN_DEFAULTS = {
@@ -856,7 +931,35 @@ async function fetchMacroData() {
       const rangePosition = w52High > w52Low ? ((price - w52Low) / (w52High - w52Low)) * 100 : 50;
       w52 = { high: w52High, low: w52Low, avg: Math.round(avg * 100) / 100, pctFromHigh, pctFromLow, rangePosition: Math.round(rangePosition) };
     }
-    results[symbol] = { price, change, prevClose, high, low, currency, trend5d, w52 };
+    // Volume analysis for index symbols (from already-fetched data, 0 extra API calls)
+    let volumeData = null;
+    const VOLUME_INDICES = ["^GSPC", "^GDAXI", "^DJI", "^IXIC"];
+    if (VOLUME_INDICES.includes(symbol) && parsed5d && parsed5d.candles.length >= 2) {
+      const candles5d = parsed5d.candles;
+      const lastCandle = candles5d[candles5d.length - 1];
+      const volumes = candles5d.map(c => c.volume).filter(v => v > 0);
+      if (volumes.length >= 2 && lastCandle.volume > 0) {
+        const currentVol = lastCandle.volume;
+        const avgVol = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+        const ratio = avgVol > 0 ? currentVol / avgVol : 1;
+        let longTermAvg = null, longTermRatio = null;
+        if (parsed1y && parsed1y.candles.length >= 4) {
+          const weeklyVols = parsed1y.candles.map(c => c.volume).filter(v => v > 0);
+          if (weeklyVols.length >= 4) {
+            longTermAvg = Math.round((weeklyVols.reduce((a, b) => a + b, 0) / weeklyVols.length) / 5);
+            longTermRatio = longTermAvg > 0 ? Math.round((currentVol / longTermAvg) * 100) / 100 : null;
+          }
+        }
+        volumeData = {
+          current: currentVol,
+          avg5d: Math.round(avgVol),
+          ratio: Math.round(ratio * 100) / 100,
+          longTermAvg,
+          longTermRatio,
+        };
+      }
+    }
+    results[symbol] = { price, change, prevClose, high, low, currency, trend5d, w52, volumeData };
   }
   return results;
 }
@@ -990,14 +1093,15 @@ function getSeasonalContext() {
   const monthData = MONTHLY_SEASONALITY[month] || {};
   const cycleData = PRESIDENTIAL_CYCLE[cycleYear] || {};
 
-  // Find upcoming events (next 14 days)
+  // Find upcoming events (next 30 days)
   const upcomingEvents = RECURRING_EVENTS_2026
     .filter(e => {
       const eventDate = new Date(year, e.month - 1, e.day);
       const diffDays = (eventDate - now) / (1000 * 60 * 60 * 24);
-      return diffDays >= -1 && diffDays <= 14;
+      return diffDays >= -1 && diffDays <= 30;
     })
-    .map(e => ({ ...e, daysUntil: Math.ceil((new Date(year, e.month - 1, e.day) - now) / (1000 * 60 * 60 * 24)) }));
+    .map(e => ({ ...e, daysUntil: Math.ceil((new Date(year, e.month - 1, e.day) - now) / (1000 * 60 * 60 * 24)) }))
+    .sort((a, b) => a.daysUntil - b.daysUntil || (b.impactScore || 0) - (a.impactScore || 0));
 
   // Midterm-specific context
   let midtermNote = null;
@@ -1052,7 +1156,26 @@ async function generateBriefing(env, type) {
     tradeSetups = generateTradeSetups(usResults, 5);
   }
 
-  // 6. Assemble briefing
+  // 6. Compute volume/liquidity overview for indices
+  const VOLUME_INDEX_SYMS = ["^GSPC", "^GDAXI", "^DJI", "^IXIC"];
+  const volumeOverview = VOLUME_INDEX_SYMS
+    .map(sym => {
+      const m = macro[sym];
+      if (!m || !m.volumeData) return null;
+      const vd = m.volumeData;
+      const indexName = MACRO_SYMBOLS.indices.find(s => s.symbol === sym)?.name || sym;
+      const level = vd.ratio >= 1.5 ? "Hoch" : vd.ratio >= 1.1 ? "Normal" : vd.ratio >= 0.8 ? "Unterdurchschnittlich" : "Niedrig";
+      return { symbol: sym, name: indexName, ...vd, level };
+    })
+    .filter(Boolean);
+  let aggregateLiquidity = null;
+  if (volumeOverview.length > 0) {
+    const avgRatio = volumeOverview.reduce((s, v) => s + v.ratio, 0) / volumeOverview.length;
+    const level = avgRatio >= 1.5 ? "Hoch" : avgRatio >= 1.1 ? "Normal" : avgRatio >= 0.8 ? "Unterdurchschnittlich" : "Niedrig";
+    aggregateLiquidity = { avgRatio: Math.round(avgRatio * 100) / 100, level };
+  }
+
+  // 7. Assemble briefing
   const briefing = {
     type, regionFocus,
     generatedAt: new Date().toISOString(),
@@ -1060,6 +1183,8 @@ async function generateBriefing(env, type) {
     seasonalContext,
     macroOverview,
     intermarketSignals,
+    volumeOverview,
+    aggregateLiquidity,
     sectorRotation,
     scannerHits: scannerHits.map(r => ({
       symbol: r.displaySymbol, yahooSymbol: r.symbol, currency: r.currency,

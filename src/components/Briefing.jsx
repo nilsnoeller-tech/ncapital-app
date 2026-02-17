@@ -202,8 +202,14 @@ export default function Briefing({ onNavigate }) {
           {/* ── Saisonale Einordnung ── */}
           <SeasonalSection seasonal={briefing.seasonalContext} isMobile={isMobile} />
 
+          {/* ── Wirtschaftskalender ── */}
+          <CalendarSection upcomingEvents={briefing.seasonalContext?.upcomingEvents} isMobile={isMobile} />
+
           {/* ── Makro-Ueberblick ── */}
           <MacroSection macro={briefing.macroOverview} vixHistory={briefing.vixHistory} isMobile={isMobile} />
+
+          {/* ── Liquiditaet & Volumen ── */}
+          <LiquiditySection volumeOverview={briefing.volumeOverview} aggregateLiquidity={briefing.aggregateLiquidity} isMobile={isMobile} />
 
           {/* ── Intermarket-Signale ── */}
           <IntermarketSection signals={briefing.intermarketSignals} isMobile={isMobile} />
@@ -254,7 +260,7 @@ function SeasonalSection({ seasonal, isMobile }) {
         <span style={{ color: C.textMuted, fontSize: 13, marginLeft: "auto" }}>{monthName} {seasonal.year}</span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginBottom: midtermNote || (upcomingEvents?.length > 0) ? 14 : 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginBottom: midtermNote ? 14 : 0 }}>
         {/* Monthly Pattern */}
         <div style={{ background: C.bg, borderRadius: 12, padding: 14, border: `1px solid ${C.border}` }}>
           <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>Monats-Saisonalitaet</div>
@@ -294,7 +300,7 @@ function SeasonalSection({ seasonal, isMobile }) {
 
       {/* Midterm Note */}
       {midtermNote && (
-        <div style={{ background: `${C.orange}12`, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.orange}30`, marginBottom: upcomingEvents?.length > 0 ? 12 : 0 }}>
+        <div style={{ background: `${C.orange}12`, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.orange}30` }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <AlertTriangle size={14} color={C.orange} />
             <span style={{ color: C.orange, fontSize: 13, fontWeight: 600 }}>{midtermNote}</span>
@@ -302,23 +308,133 @@ function SeasonalSection({ seasonal, isMobile }) {
         </div>
       )}
 
-      {/* Upcoming Events */}
-      {upcomingEvents?.length > 0 && (
-        <div>
-          <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>Kommende Events</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {upcomingEvents.map((ev, i) => {
-              const typeColors = { fed: C.orange, options: C.red, earnings: C.blue, political: C.accent };
-              const color = typeColors[ev.type] || C.textMuted;
+    </GlassCard>
+  );
+}
+
+// ─── Calendar Section (Wirtschaftskalender mit Impact-Scoring) ───
+function CalendarSection({ upcomingEvents, isMobile }) {
+  if (!upcomingEvents?.length) return null;
+
+  const typeColors = { fed: C.orange, options: C.red, earnings: C.blue, political: C.accent, data: C.yellow, ecb: C.blue, minutes: C.textMuted };
+  const typeIcons = { fed: "\uD83C\uDFE6", options: "\uD83D\uDCCA", earnings: "\uD83D\uDCC8", political: "\uD83D\uDDF3\uFE0F", data: "\uD83D\uDCC9", ecb: "\uD83C\uDDEA\uD83C\uDDFA", minutes: "\uD83D\uDCDD" };
+  const impactColors = { high: C.red, medium: C.orange, low: C.yellow };
+  const impactLabels = { high: "Hoch", medium: "Mittel", low: "Niedrig" };
+
+  const groups = [
+    { label: "Diese Woche", events: upcomingEvents.filter(e => e.daysUntil <= 7) },
+    { label: "Naechste Woche", events: upcomingEvents.filter(e => e.daysUntil > 7 && e.daysUntil <= 14) },
+    { label: "Spaeter", events: upcomingEvents.filter(e => e.daysUntil > 14) },
+  ].filter(g => g.events.length > 0);
+
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <Calendar size={18} color={C.accent} />
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>Wirtschaftskalender</h3>
+        <span style={{ color: C.textMuted, fontSize: 12 }}>Naechste 30 Tage</span>
+      </div>
+      {groups.map(group => (
+        <div key={group.label} style={{ marginBottom: 14 }}>
+          <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>{group.label}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {group.events.map((ev, i) => {
+              const iColor = impactColors[ev.impact] || C.yellow;
+              const icon = typeIcons[ev.type] || "\uD83D\uDCC5";
               return (
-                <span key={i} style={{ fontSize: 12, color, background: `${color}15`, borderRadius: 8, padding: "4px 10px", border: `1px solid ${color}25` }}>
-                  {ev.daysUntil <= 0 ? "Heute" : `In ${ev.daysUntil}d`} \u2022 {ev.name}
-                </span>
+                <div key={i} style={{
+                  display: "flex", alignItems: "flex-start", gap: 10,
+                  background: C.bg, borderRadius: 10, padding: "10px 14px",
+                  border: `1px solid ${C.border}`, borderLeft: `3px solid ${iColor}`,
+                }}>
+                  <div style={{ minWidth: 44, textAlign: "center" }}>
+                    <div style={{ fontSize: 10, color: C.textDim }}>
+                      {ev.daysUntil <= 0 ? "Heute" : ev.daysUntil === 1 ? "Morgen" : `In ${ev.daysUntil}d`}
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: ev.daysUntil <= 1 ? C.accent : C.text }}>
+                      {ev.day}.{ev.month}.
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 14 }}>{icon}</span>
+                      <span style={{ color: C.text, fontSize: 13, fontWeight: 600 }}>{ev.name}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: iColor, background: `${iColor}20`, borderRadius: 4, padding: "1px 6px" }}>
+                        {impactLabels[ev.impact] || ev.impact}
+                      </span>
+                    </div>
+                    {ev.description && (!isMobile || ev.impact === "high") && (
+                      <div style={{ color: C.textMuted, fontSize: 11, marginTop: 4, lineHeight: 1.5 }}>{ev.description}</div>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>
         </div>
-      )}
+      ))}
+    </GlassCard>
+  );
+}
+
+// ─── Liquidity Section (Volumen-Analyse fuer Indizes) ───
+function LiquiditySection({ volumeOverview, aggregateLiquidity, isMobile }) {
+  if (!volumeOverview?.length) return null;
+
+  const levelColors = { "Hoch": C.green, "Normal": C.yellow, "Unterdurchschnittlich": C.orange, "Niedrig": C.red };
+
+  function formatVol(n) {
+    if (!n) return "—";
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(0) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(0) + "K";
+    return n.toString();
+  }
+
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <BarChart3 size={18} color={C.accent} />
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>Liquiditaet & Volumen</h3>
+        {aggregateLiquidity && (
+          <span style={{
+            fontSize: 11, fontWeight: 700, marginLeft: "auto",
+            color: levelColors[aggregateLiquidity.level] || C.textMuted,
+            background: `${(levelColors[aggregateLiquidity.level] || C.textMuted)}20`,
+            borderRadius: 6, padding: "2px 8px",
+          }}>
+            {"\u00D8"} {aggregateLiquidity.avgRatio}x ({aggregateLiquidity.level})
+          </span>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10 }}>
+        {volumeOverview.map(v => {
+          const color = levelColors[v.level] || C.textMuted;
+          const barWidth = Math.min(100, Math.max(5, v.ratio * 50));
+          return (
+            <div key={v.symbol} style={{ background: C.bg, borderRadius: 12, padding: 12, border: `1px solid ${C.border}` }}>
+              <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, marginBottom: 6 }}>{v.name}</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 20, fontWeight: 700, color, fontFamily: "monospace" }}>{v.ratio}x</span>
+                <span style={{ fontSize: 10, color: C.textDim }}>{v.level}</span>
+              </div>
+              <div style={{ height: 6, background: C.border, borderRadius: 3, marginBottom: 6, position: "relative" }}>
+                <div style={{ height: "100%", width: `${barWidth}%`, background: color, borderRadius: 3, transition: "width .5s" }} />
+                {/* 1.0x reference line */}
+                <div style={{ position: "absolute", left: "50%", top: -1, width: 1, height: 8, background: C.textDim }} />
+              </div>
+              <div style={{ fontSize: 10, color: C.textDim }}>
+                Vol: {formatVol(v.current)} / {"\u00D8"} {formatVol(v.avg5d)}
+              </div>
+              {v.longTermRatio != null && (
+                <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
+                  vs. Jahres-{"\u00D8"}: <span style={{ color: v.longTermRatio >= 1 ? C.green : C.red, fontWeight: 600 }}>{v.longTermRatio}x</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </GlassCard>
   );
 }
