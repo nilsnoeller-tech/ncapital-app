@@ -1,6 +1,8 @@
 // ─── Notification Service ───
 // Lokale Browser-Benachrichtigungen + Web Push Subscription Management.
 
+import { authFetch } from "./auth.js";
+
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 const COOLDOWN_MS = 60 * 60 * 1000; // 1 Stunde pro Symbol
 const notifiedRecently = new Map();
@@ -82,7 +84,7 @@ function urlBase64ToUint8Array(base64String) {
 }
 
 async function getVapidPublicKey() {
-  const resp = await fetch(`${PROXY_BASE}/api/push/vapid-public-key`);
+  const resp = await authFetch(`${PROXY_BASE}/api/push/vapid-public-key`);
   const data = await resp.json();
   return data.key;
 }
@@ -105,7 +107,7 @@ export async function subscribeToPush(symbols, thresholds) {
   });
 
   // 4. Send subscription + watchlist to server
-  await fetch(`${PROXY_BASE}/api/push/subscribe`, {
+  await authFetch(`${PROXY_BASE}/api/push/subscribe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -127,7 +129,7 @@ export async function unsubscribeFromPush() {
       await subscription.unsubscribe();
     }
     // Send endpoint so server only removes THIS device
-    await fetch(`${PROXY_BASE}/api/push/unsubscribe`, {
+    await authFetch(`${PROXY_BASE}/api/push/unsubscribe`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ endpoint }),
@@ -149,7 +151,7 @@ export async function getPushSubscriptionStatus() {
 
 export async function syncWatchlistToServer(symbols, thresholds) {
   try {
-    await fetch(`${PROXY_BASE}/api/push/watchlist`, {
+    await authFetch(`${PROXY_BASE}/api/push/watchlist`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -164,7 +166,7 @@ export async function syncWatchlistToServer(symbols, thresholds) {
 
 export async function sendTestPush() {
   try {
-    const resp = await fetch(`${PROXY_BASE}/api/push/test`, {
+    const resp = await authFetch(`${PROXY_BASE}/api/push/test`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
@@ -177,7 +179,7 @@ export async function sendTestPush() {
 
 export async function getPushServerStatus() {
   try {
-    const resp = await fetch(`${PROXY_BASE}/api/push/status`);
+    const resp = await authFetch(`${PROXY_BASE}/api/push/status`);
     return await resp.json();
   } catch (e) {
     return { error: e.message };
@@ -188,7 +190,7 @@ export async function getPushServerStatus() {
 
 export async function getScanResults() {
   try {
-    const resp = await fetch(`${PROXY_BASE}/api/scan/results`);
+    const resp = await authFetch(`${PROXY_BASE}/api/scan/results`);
     return await resp.json();
   } catch (e) {
     return { results: [], count: 0, error: e.message };
@@ -197,7 +199,7 @@ export async function getScanResults() {
 
 export async function getScanStatus() {
   try {
-    const resp = await fetch(`${PROXY_BASE}/api/scan/status`);
+    const resp = await authFetch(`${PROXY_BASE}/api/scan/status`);
     return await resp.json();
   } catch (e) {
     return { error: e.message };
@@ -206,7 +208,7 @@ export async function getScanStatus() {
 
 export async function updateScanConfig(config) {
   try {
-    const resp = await fetch(`${PROXY_BASE}/api/scan/config`, {
+    const resp = await authFetch(`${PROXY_BASE}/api/scan/config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),

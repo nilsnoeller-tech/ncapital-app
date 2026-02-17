@@ -1,6 +1,8 @@
 // ─── Market Data Service ───
 // Holt OHLCV-Daten via Cloudflare-Proxy (Yahoo Finance) und cached in IndexedDB.
 
+import { authFetch } from "./auth.js";
+
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 
 const DB_NAME = "ncapital-market-cache";
@@ -129,7 +131,7 @@ export async function fetchOHLCV(symbol, range = "1y", interval = "1d") {
   // 2. Von Proxy laden
   try {
     const url = `${PROXY_BASE}/api/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const resp = await authFetch(url, { signal: AbortSignal.timeout(15000) });
 
     if (!resp.ok) {
       throw new Error(`Proxy-Fehler: ${resp.status}`);

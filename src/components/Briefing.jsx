@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Sun, Moon, TrendingUp, TrendingDown, Minus, AlertTriangle, Calendar, BarChart3, Target, ArrowRight, Clock } from "lucide-react";
+import { authFetch } from "../services/auth.js";
 
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 
@@ -102,7 +103,7 @@ export default function Briefing({ onNavigate }) {
         } catch {}
       }
 
-      const res = await fetch(`${PROXY_BASE}/api/briefing/latest`);
+      const res = await authFetch(`${PROXY_BASE}/api/briefing/latest`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);

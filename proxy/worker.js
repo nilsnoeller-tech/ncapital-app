@@ -231,9 +231,122 @@ const SCAN_DEFAULTS = {
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
 };
+
+// ─── JWT / Auth Helpers (Web Crypto API, no npm) ───
+
+function base64urlEncode(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64urlDecode(str) {
+  const padded = str.replace(/-/g, "+").replace(/_/g, "/") + "==".slice(0, (4 - (str.length % 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function hashPassword(password, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: enc.encode(salt), iterations: 100000, hash: "SHA-256" },
+    keyMaterial,
+    256,
+  );
+  return base64urlEncode(bits);
+}
+
+async function createJWT(payload, secret) {
+  const header = { alg: "HS256", typ: "JWT" };
+  const enc = new TextEncoder();
+  const headerB64 = base64urlEncode(enc.encode(JSON.stringify(header)));
+  const payloadB64 = base64urlEncode(enc.encode(JSON.stringify(payload)));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(signingInput));
+  return `${signingInput}.${base64urlEncode(sig)}`;
+}
+
+async function verifyJWT(token, secret) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [headerB64, payloadB64, sigB64] = parts;
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    const sigValid = await crypto.subtle.verify("HMAC", key, base64urlDecode(sigB64), enc.encode(`${headerB64}.${payloadB64}`));
+    if (!sigValid) return null;
+    const payload = JSON.parse(new TextDecoder().decode(base64urlDecode(payloadB64)));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch { return null; }
+}
+
+// ─── Auth Route Handler ───
+
+async function handleAuthRoutes(url, request, env) {
+  const path = url.pathname;
+
+  if (request.method !== "POST" && !(request.method === "GET" && path === "/api/auth/me")) {
+    return jsonResponse({ error: "Method not allowed" }, 405);
+  }
+
+  // POST /api/auth/register
+  if (path === "/api/auth/register" && request.method === "POST") {
+    let body;
+    try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
+    const { username, password } = body;
+    if (!username || !password) return jsonResponse({ error: "Username und Passwort erforderlich" }, 400);
+    if (username.length < 3 || username.length > 30) return jsonResponse({ error: "Username: 3-30 Zeichen" }, 400);
+    if (password.length < 6) return jsonResponse({ error: "Passwort: mindestens 6 Zeichen" }, 400);
+    if (!/^[a-zA-Z0-9_-]+$/.test(username)) return jsonResponse({ error: "Username: nur Buchstaben, Zahlen, -, _" }, 400);
+
+    const existing = await env.NCAPITAL_KV.get(`user:${username.toLowerCase()}`);
+    if (existing) return jsonResponse({ error: "Username bereits vergeben" }, 409);
+
+    const salt = base64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
+    const passwordHash = await hashPassword(password, salt);
+    await env.NCAPITAL_KV.put(`user:${username.toLowerCase()}`, JSON.stringify({ passwordHash, salt, createdAt: new Date().toISOString() }));
+
+    const token = await createJWT({ sub: username.toLowerCase(), iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7 * 86400 }, env.JWT_SECRET);
+    return jsonResponse({ ok: true, token, username: username.toLowerCase() });
+  }
+
+  // POST /api/auth/login
+  if (path === "/api/auth/login" && request.method === "POST") {
+    let body;
+    try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
+    const { username, password } = body;
+    if (!username || !password) return jsonResponse({ error: "Username und Passwort erforderlich" }, 400);
+
+    const userData = await env.NCAPITAL_KV.get(`user:${username.toLowerCase()}`, "json");
+    if (!userData) return jsonResponse({ error: "Ungueltige Anmeldedaten" }, 401);
+
+    const hash = await hashPassword(password, userData.salt);
+    if (hash !== userData.passwordHash) return jsonResponse({ error: "Ungueltige Anmeldedaten" }, 401);
+
+    const token = await createJWT({ sub: username.toLowerCase(), iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7 * 86400 }, env.JWT_SECRET);
+    return jsonResponse({ ok: true, token, username: username.toLowerCase() });
+  }
+
+  // GET /api/auth/me
+  if (path === "/api/auth/me" && request.method === "GET") {
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) return jsonResponse({ error: "Nicht eingeloggt" }, 401);
+    const payload = await verifyJWT(authHeader.slice(7), env.JWT_SECRET);
+    if (!payload) return jsonResponse({ error: "Token ungueltig oder abgelaufen" }, 401);
+    return jsonResponse({ ok: true, username: payload.sub });
+  }
+
+  return null;
+}
 
 const YAHOO_HOSTS = [
   "query1.finance.yahoo.com",
@@ -838,15 +951,31 @@ async function mergeAndNotify(env, config, totalChunks) {
   const notifyResults = filtered.filter((r) => r.swing.total >= notifyThreshold);
   if (notifyResults.length === 0) return;
 
-  const subscriptions = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
-  if (subscriptions.length === 0) return;
+  // Collect subscriptions from ALL users (per-user keys + legacy global key)
+  const allSubs = [];
+  const subSources = []; // Track which KV key each sub came from for cleanup
+  const legacySubs = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
+  for (const sub of legacySubs) {
+    allSubs.push(sub);
+    subSources.push("push:subscriptions");
+  }
+  const listResult = await env.NCAPITAL_KV.list({ prefix: "push:user:" });
+  for (const key of listResult.keys) {
+    if (!key.name.endsWith(":subscriptions")) continue;
+    const userSubs = (await env.NCAPITAL_KV.get(key.name, "json")) || [];
+    for (const sub of userSubs) {
+      allSubs.push(sub);
+      subSources.push(key.name);
+    }
+  }
+  if (allSubs.length === 0) return;
 
   // Batch-read all cooldowns in parallel (saves N sequential reads)
   const cooldownKeys = notifyResults.map((r) => `cooldown:${r.displaySymbol}`);
   const cooldownValues = await Promise.all(cooldownKeys.map((k) => env.NCAPITAL_KV.get(k)));
 
   const notifications = [];
-  const validSubs = [...subscriptions];
+  const expiredIndices = new Set();
   const cooldownWrites = [];
 
   for (let ri = 0; ri < notifyResults.length; ri++) {
@@ -859,10 +988,10 @@ async function mergeAndNotify(env, config, totalChunks) {
     const tag = `scan-${r.displaySymbol}`;
 
     let anySent = false;
-    for (let si = validSubs.length - 1; si >= 0; si--) {
-      const pushResult = await sendPush(validSubs[si], { title, body, tag, url: "/ncapital-app/" }, env);
+    for (let si = 0; si < allSubs.length; si++) {
+      const pushResult = await sendPush(allSubs[si], { title, body, tag, url: "/ncapital-app/" }, env);
       if (pushResult.sent) anySent = true;
-      if (pushResult.expired) validSubs.splice(si, 1);
+      if (pushResult.expired) expiredIndices.add(si);
     }
 
     if (anySent) {
@@ -871,14 +1000,22 @@ async function mergeAndNotify(env, config, totalChunks) {
     }
   }
 
-  // Batch-write all cooldowns + cleanup in parallel
+  // Clean up expired subscriptions — group by source key
   const writes = [...cooldownWrites];
-  if (validSubs.length < subscriptions.length) {
-    writes.push(env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(validSubs)));
+  if (expiredIndices.size > 0) {
+    const cleanupByKey = {};
+    for (let i = 0; i < allSubs.length; i++) {
+      const key = subSources[i];
+      if (!cleanupByKey[key]) cleanupByKey[key] = [];
+      if (!expiredIndices.has(i)) cleanupByKey[key].push(allSubs[i]);
+    }
+    for (const [key, validSubs] of Object.entries(cleanupByKey)) {
+      writes.push(env.NCAPITAL_KV.put(key, JSON.stringify(validSubs)));
+    }
   }
   if (writes.length > 0) await Promise.all(writes);
 
-  console.log(`[Scan] Notifications sent: ${notifications.length}`);
+  console.log(`[Scan] Notifications sent: ${notifications.length} to ${allSubs.length} devices`);
 }
 
 // ─── Market Briefing Generation ───
@@ -1255,10 +1392,11 @@ async function handleBriefingRoutes(url, request, env) {
 
 // ─── HTTP Route Handlers ───
 
-// Migrate old single subscription to array format (one-time, skips if already done)
+// Migrate old subscriptions to per-user format (one-time, skips if already done)
 let migrationDone = false;
-async function migrateSubscriptions(env) {
+async function migrateSubscriptions(env, username) {
   if (migrationDone) return;
+  // Migrate old single subscription → old array
   const oldSub = await env.NCAPITAL_KV.get("push:subscription", "json");
   if (oldSub) {
     const existing = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
@@ -1268,14 +1406,29 @@ async function migrateSubscriptions(env) {
     }
     await env.NCAPITAL_KV.delete("push:subscription");
   }
+  // Migrate old global array → first authenticated user
+  const globalSubs = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
+  if (globalSubs.length > 0 && username !== "default") {
+    const userKey = `push:user:${username}:subscriptions`;
+    const userSubs = (await env.NCAPITAL_KV.get(userKey, "json")) || [];
+    const merged = [...userSubs];
+    for (const sub of globalSubs) {
+      if (!merged.some(s => s.endpoint === sub.endpoint)) merged.push(sub);
+    }
+    await env.NCAPITAL_KV.put(userKey, JSON.stringify(merged));
+    await env.NCAPITAL_KV.delete("push:subscriptions");
+    console.log(`[Migration] Moved ${globalSubs.length} global push subs to user:${username}`);
+  }
   migrationDone = true;
 }
 
-async function handlePushRoutes(url, request, env) {
+async function handlePushRoutes(url, request, env, user) {
   const path = url.pathname;
+  const username = user?.sub || "default";
+  const pushKey = `push:user:${username}:subscriptions`;
 
   // One-time migration from single to multi subscription
-  await migrateSubscriptions(env);
+  await migrateSubscriptions(env, username);
 
   // GET /api/push/vapid-public-key
   if (path === "/api/push/vapid-public-key" && request.method === "GET") {
@@ -1285,7 +1438,7 @@ async function handlePushRoutes(url, request, env) {
   // GET /api/push/status
   if (path === "/api/push/status" && request.method === "GET") {
     const [subs, state] = await Promise.all([
-      env.NCAPITAL_KV.get("push:subscriptions", "json"),
+      env.NCAPITAL_KV.get(pushKey, "json"),
       env.NCAPITAL_KV.get("scan:state", "json"),
     ]);
     return jsonResponse({
@@ -1307,38 +1460,28 @@ async function handlePushRoutes(url, request, env) {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
-  // POST /api/push/subscribe — adds device to subscriptions array
+  // POST /api/push/subscribe — adds device to user's subscriptions
   if (path === "/api/push/subscribe") {
     if (!body.subscription) {
       return jsonResponse({ error: "Missing subscription" }, 400);
     }
-    // Load existing subscriptions
-    const existing = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
-    // Deduplicate by endpoint
+    const existing = (await env.NCAPITAL_KV.get(pushKey, "json")) || [];
     const filtered = existing.filter(s => s.endpoint !== body.subscription.endpoint);
     filtered.push(body.subscription);
-    await env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(filtered));
-    // Optionally save watchlist + thresholds too
-    if (body.symbols) {
-      await env.NCAPITAL_KV.put("watchlist:symbols", JSON.stringify(body.symbols));
-    }
-    if (body.thresholds) {
-      await env.NCAPITAL_KV.put("watchlist:thresholds", JSON.stringify(body.thresholds));
-    }
+    await env.NCAPITAL_KV.put(pushKey, JSON.stringify(filtered));
     return jsonResponse({ ok: true, message: "Subscription saved", deviceCount: filtered.length });
   }
 
-  // POST /api/push/unsubscribe — removes one device by endpoint
+  // POST /api/push/unsubscribe — removes one device from user's subscriptions
   if (path === "/api/push/unsubscribe") {
     const endpoint = body.endpoint;
     if (endpoint) {
-      const existing = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
+      const existing = (await env.NCAPITAL_KV.get(pushKey, "json")) || [];
       const filtered = existing.filter(s => s.endpoint !== endpoint);
-      await env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(filtered));
+      await env.NCAPITAL_KV.put(pushKey, JSON.stringify(filtered));
       return jsonResponse({ ok: true, message: "Device removed", deviceCount: filtered.length });
     }
-    // Fallback: remove all
-    await env.NCAPITAL_KV.put("push:subscriptions", "[]");
+    await env.NCAPITAL_KV.put(pushKey, "[]");
     return jsonResponse({ ok: true, message: "All subscriptions removed" });
   }
 
@@ -1347,16 +1490,16 @@ async function handlePushRoutes(url, request, env) {
     if (!body.symbols) {
       return jsonResponse({ error: "Missing symbols" }, 400);
     }
-    await env.NCAPITAL_KV.put("watchlist:symbols", JSON.stringify(body.symbols));
+    await env.NCAPITAL_KV.put(`watchlist:user:${username}:symbols`, JSON.stringify(body.symbols));
     if (body.thresholds) {
-      await env.NCAPITAL_KV.put("watchlist:thresholds", JSON.stringify(body.thresholds));
+      await env.NCAPITAL_KV.put(`watchlist:user:${username}:thresholds`, JSON.stringify(body.thresholds));
     }
     return jsonResponse({ ok: true, symbols: body.symbols.length });
   }
 
-  // POST /api/push/test — sends test push to ALL devices
+  // POST /api/push/test — sends test push to current user's devices
   if (path === "/api/push/test") {
-    const subs = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
+    const subs = (await env.NCAPITAL_KV.get(pushKey, "json")) || [];
     if (subs.length === 0) {
       return jsonResponse({ error: "No push subscriptions found" }, 404);
     }
@@ -1372,9 +1515,8 @@ async function handlePushRoutes(url, request, env) {
       results.push(result);
       if (!result.expired) validSubs.push(sub);
     }
-    // Remove expired subscriptions
     if (validSubs.length < subs.length) {
-      await env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(validSubs));
+      await env.NCAPITAL_KV.put(pushKey, JSON.stringify(validSubs));
     }
     return jsonResponse({ sent: results.some(r => r.sent), devices: results.length, results });
   }
@@ -1478,9 +1620,26 @@ export default {
 
     const url = new URL(request.url);
 
+    // ── Auth Routes (public, no token required) ──
+    if (url.pathname.startsWith("/api/auth/")) {
+      const resp = await handleAuthRoutes(url, request, env);
+      if (resp) return resp;
+      return jsonResponse({ error: "Unknown auth endpoint" }, 404);
+    }
+
+    // ── Auth Middleware: all other routes require valid JWT ──
+    const authHeader = request.headers.get("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return jsonResponse({ error: "Authentifizierung erforderlich" }, 401);
+    }
+    const user = await verifyJWT(authHeader.slice(7), env.JWT_SECRET);
+    if (!user) {
+      return jsonResponse({ error: "Token ungueltig oder abgelaufen" }, 401);
+    }
+
     // ── Push Routes ──
     if (url.pathname.startsWith("/api/push/")) {
-      const resp = await handlePushRoutes(url, request, env);
+      const resp = await handlePushRoutes(url, request, env, user);
       if (resp) return resp;
       return jsonResponse({ error: "Unknown push endpoint" }, 404);
     }

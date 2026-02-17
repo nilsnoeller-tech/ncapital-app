@@ -1,10 +1,12 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper, LogOut } from "lucide-react";
 import Watchlist from "./components/Watchlist";
 import Briefing from "./components/Briefing";
+import LoginPage from "./components/LoginPage";
 import { useAutoScore } from "./hooks/useAutoScore";
 import { getFinvizChartUrl, isFinvizAvailable } from "./services/marketData";
+import { isAuthenticated, getUser, logout as authLogout } from "./services/auth";
 
 // ─── Color System ───
 const C = {
@@ -1719,12 +1721,25 @@ const TradeLog = ({ tradeList, onUpdateTrade }) => {
 // ─── MAIN APP ───
 // ════════════════════════════════════════════════════════════════
 export default function TradingJournal() {
+  const [authed, setAuthed] = useState(isAuthenticated());
   const [page, setPage] = useState("briefing");
   const [tradeList, setTradeList] = useState(loadTrades);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== "undefined" && !navigator.onLine);
   const ww = useWindowWidth();
   const isMobile = ww < 768;
+
+  const handleLogout = useCallback(() => { authLogout(); setAuthed(false); }, []);
+  const handleLogin = useCallback(() => { setAuthed(true); }, []);
+
+  // Listen for auth errors (401) from authFetch
+  useEffect(() => {
+    const onAuthError = () => { setAuthed(false); };
+    window.addEventListener("ncapital-auth-error", onAuthError);
+    return () => window.removeEventListener("ncapital-auth-error", onAuthError);
+  }, []);
+
+  if (!authed) return <LoginPage onLogin={handleLogin} />;
 
   // Offline-Detection
   useEffect(() => {
@@ -1822,10 +1837,20 @@ export default function TradingJournal() {
                 num={k === "trades" ? tradeList.filter(t => { const p = tradeComputedProps(t); return p.remaining > 0; }).length || undefined : undefined} />
             ))}
           </div>
-          <div style={{ marginTop: "auto", padding: "16px 12px", borderRadius: 12, background: `${C.accent}08`, border: `1px solid ${C.accent}15` }}>
-            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Aktuelles Kapital</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
-            <div style={{ fontSize: 11, color: portfolio.roiPct >= 0 ? C.green : C.red, fontWeight: 600, marginTop: 2 }}>{portfolio.roiPct >= 0 ? "+" : ""}{portfolio.roiPct.toFixed(1)}% ROI</div>
+          <div style={{ marginTop: "auto" }}>
+            <div style={{ padding: "16px 12px", borderRadius: 12, background: `${C.accent}08`, border: `1px solid ${C.accent}15`, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Aktuelles Kapital</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
+              <div style={{ fontSize: 11, color: portfolio.roiPct >= 0 ? C.green : C.red, fontWeight: 600, marginTop: 2 }}>{portfolio.roiPct >= 0 ? "+" : ""}{portfolio.roiPct.toFixed(1)}% ROI</div>
+            </div>
+            <button onClick={handleLogout} style={{
+              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px",
+              border: "none", borderRadius: 10, background: "transparent", color: C.textDim,
+              fontSize: 13, fontWeight: 500, cursor: "pointer", transition: "all 0.2s",
+            }} onMouseEnter={e => { e.currentTarget.style.background = `${C.red}12`; e.currentTarget.style.color = C.red; }}
+               onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.textDim; }}>
+              <LogOut size={16} /> Abmelden
+            </button>
           </div>
         </div>
       )}
@@ -1854,9 +1879,18 @@ export default function TradingJournal() {
                   num={k === "trades" ? tradeList.filter(t => { const p = tradeComputedProps(t); return p.remaining > 0; }).length || undefined : undefined} />
               ))}
             </div>
-            <div style={{ marginTop: "auto", padding: "16px 12px", borderRadius: 12, background: `${C.accent}08`, border: `1px solid ${C.accent}15` }}>
-              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Aktuelles Kapital</div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
+            <div style={{ marginTop: "auto" }}>
+              <div style={{ padding: "16px 12px", borderRadius: 12, background: `${C.accent}08`, border: `1px solid ${C.accent}15`, marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Aktuelles Kapital</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
+              </div>
+              <button onClick={handleLogout} style={{
+                display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px",
+                border: "none", borderRadius: 10, background: `${C.red}12`, color: C.red,
+                fontSize: 13, fontWeight: 500, cursor: "pointer",
+              }}>
+                <LogOut size={16} /> Abmelden
+              </button>
             </div>
           </div>
         </div>
