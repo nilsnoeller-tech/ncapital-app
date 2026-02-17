@@ -51,10 +51,10 @@ self.addEventListener("push", (event) => {
   const title = data.title || "N-Capital Alert";
   const options = {
     body: data.body || "",
-    icon: "/ncapital-app/icons/icon-192.png",
-    badge: "/ncapital-app/icons/icon-192.png",
+    icon: "/trading/icons/icon-192.png",
+    badge: "/trading/icons/icon-192.png",
     tag: data.tag || "watchlist",
-    data: { url: data.url || "/ncapital-app/" },
+    data: { url: data.url || "/trading/" },
     vibrate: [200, 100, 200],
     requireInteraction: true,
   };
@@ -66,7 +66,7 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/ncapital-app/";
+  const url = event.notification.data?.url || "/trading/";
 
   event.waitUntil(
     clients
@@ -74,7 +74,7 @@ self.addEventListener("notificationclick", (event) => {
       .then((windowClients) => {
         // Focus existing tab if open
         for (const client of windowClients) {
-          if (client.url.includes("/ncapital-app/") && "focus" in client) {
+          if (client.url.includes("/trading/") && "focus" in client) {
             return client.focus();
           }
         }

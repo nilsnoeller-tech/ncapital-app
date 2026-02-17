@@ -4,7 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/ncapital-app/',
+  base: '/trading/',
   plugins: [
     react(),
     VitePWA({
@@ -24,12 +24,12 @@ export default defineConfig({
         background_color: '#0A0D11',
         display: 'standalone',
         orientation: 'portrait',
-        start_url: '/ncapital-app/',
-        scope: '/ncapital-app/',
+        start_url: '/trading/',
+        scope: '/trading/',
         icons: [
-          { src: '/ncapital-app/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/ncapital-app/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: '/ncapital-app/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: '/trading/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/trading/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/trading/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
     }),

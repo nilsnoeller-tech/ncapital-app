@@ -1913,8 +1913,9 @@ export default function TradingJournal() {
     check: { label: "Trade Check", icon: Calculator, sub: "Bewerte neue Trade-Setups" },
     trades: { label: "Trade Log", icon: BookOpen, sub: "Alle Trades im Detail" },
     dashboard: { label: "Dashboard", icon: LayoutDashboard, sub: "Übersicht deiner Performance" },
-    settings: { label: "Einstellungen", icon: SettingsIcon, sub: "Konto & Passwort verwalten" },
   };
+
+  const settingsPageMeta = { label: "Einstellungen", sub: "Konto & Passwort verwalten" };
 
   const renderPage = () => {
     switch (page) {
@@ -1984,14 +1985,24 @@ export default function TradingJournal() {
               <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
               <div style={{ fontSize: 11, color: portfolio.roiPct >= 0 ? C.green : C.red, fontWeight: 600, marginTop: 2 }}>{portfolio.roiPct >= 0 ? "+" : ""}{portfolio.roiPct.toFixed(1)}% ROI</div>
             </div>
-            <button onClick={handleLogout} style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px",
-              border: "none", borderRadius: 10, background: "transparent", color: C.textDim,
-              fontSize: 13, fontWeight: 500, cursor: "pointer", transition: "all 0.2s",
-            }} onMouseEnter={e => { e.currentTarget.style.background = `${C.red}12`; e.currentTarget.style.color = C.red; }}
-               onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.textDim; }}>
-              <LogOut size={16} /> Abmelden
-            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setPage("settings")} style={{
+                display: "flex", alignItems: "center", justifyContent: "center", flex: 1, padding: "9px 0",
+                border: "none", borderRadius: 10, background: page === "settings" ? `${C.accent}18` : "transparent", color: page === "settings" ? C.accentLight : C.textDim,
+                cursor: "pointer", transition: "all 0.2s",
+              }} onMouseEnter={e => { if (page !== "settings") { e.currentTarget.style.background = `${C.accent}10`; e.currentTarget.style.color = C.accentLight; }}}
+                 onMouseLeave={e => { if (page !== "settings") { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.textDim; }}}>
+                <SettingsIcon size={16} />
+              </button>
+              <button onClick={handleLogout} style={{
+                display: "flex", alignItems: "center", justifyContent: "center", flex: 1, padding: "9px 0",
+                border: "none", borderRadius: 10, background: "transparent", color: C.textDim,
+                cursor: "pointer", transition: "all 0.2s",
+              }} onMouseEnter={e => { e.currentTarget.style.background = `${C.red}12`; e.currentTarget.style.color = C.red; }}
+                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.textDim; }}>
+                <LogOut size={16} />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2025,13 +2036,22 @@ export default function TradingJournal() {
                 <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>Aktuelles Kapital</div>
                 <div style={{ fontSize: 20, fontWeight: 800, color: C.accentLight }}>{fmtEur(portfolio.kapital)}</div>
               </div>
-              <button onClick={handleLogout} style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px",
-                border: "none", borderRadius: 10, background: `${C.red}12`, color: C.red,
-                fontSize: 13, fontWeight: 500, cursor: "pointer",
-              }}>
-                <LogOut size={16} /> Abmelden
-              </button>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => navigate("settings")} style={{
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flex: 1, padding: "9px 0",
+                  border: "none", borderRadius: 10, background: page === "settings" ? `${C.accent}18` : `${C.accent}08`,
+                  color: page === "settings" ? C.accentLight : C.textDim, fontSize: 12, fontWeight: 500, cursor: "pointer",
+                }}>
+                  <SettingsIcon size={15} />
+                </button>
+                <button onClick={handleLogout} style={{
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flex: 1, padding: "9px 0",
+                  border: "none", borderRadius: 10, background: `${C.red}12`, color: C.red,
+                  fontSize: 12, fontWeight: 500, cursor: "pointer",
+                }}>
+                  <LogOut size={15} />
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2047,8 +2067,8 @@ export default function TradingJournal() {
               </button>
             )}
             <div>
-              <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text, letterSpacing: "-0.02em" }}>{pages[page].label}</div>
-              {!isMobile && <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{pages[page].sub}</div>}
+              <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text, letterSpacing: "-0.02em" }}>{(pages[page] || settingsPageMeta).label}</div>
+              {!isMobile && <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{(pages[page] || settingsPageMeta).sub}</div>}
             </div>
           </div>
         </div>

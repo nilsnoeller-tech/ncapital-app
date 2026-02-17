@@ -1016,7 +1016,7 @@ async function mergeAndNotify(env, config, totalChunks) {
 
     let anySent = false;
     for (let si = 0; si < allSubs.length; si++) {
-      const pushResult = await sendPush(allSubs[si], { title, body, tag, url: "/ncapital-app/" }, env);
+      const pushResult = await sendPush(allSubs[si], { title, body, tag, url: "/trading/" }, env);
       if (pushResult.sent) anySent = true;
       if (pushResult.expired) expiredIndices.add(si);
     }
@@ -1537,7 +1537,7 @@ async function handlePushRoutes(url, request, env, user) {
         title: "N-Capital Test",
         body: `Push-Benachrichtigungen funktionieren! (${subs.length} Gerät${subs.length > 1 ? "e" : ""})`,
         tag: "test",
-        url: "/ncapital-app/",
+        url: "/trading/",
       }, env);
       results.push(result);
       if (!result.expired) validSubs.push(sub);

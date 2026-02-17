@@ -34,8 +34,8 @@ export function sendNotification(title, body, tag) {
   try {
     const n = new Notification(title, {
       body,
-      icon: "/ncapital-app/icons/icon-192.png",
-      badge: "/ncapital-app/icons/icon-192.png",
+      icon: "/trading/icons/icon-192.png",
+      badge: "/trading/icons/icon-192.png",
       tag: tag || "watchlist",
       silent: false,
     });
