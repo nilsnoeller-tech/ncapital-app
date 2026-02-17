@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper } from "lucide-react";
 import Watchlist from "./components/Watchlist";
+import Briefing from "./components/Briefing";
 import { useAutoScore } from "./hooks/useAutoScore";
 import { getFinvizChartUrl, isFinvizAvailable } from "./services/marketData";
 
@@ -1718,7 +1719,7 @@ const TradeLog = ({ tradeList, onUpdateTrade }) => {
 // ─── MAIN APP ───
 // ════════════════════════════════════════════════════════════════
 export default function TradingJournal() {
-  const [page, setPage] = useState("check");
+  const [page, setPage] = useState("briefing");
   const [tradeList, setTradeList] = useState(loadTrades);
   const [menuOpen, setMenuOpen] = useState(false);
   const [isOffline, setIsOffline] = useState(typeof navigator !== "undefined" && !navigator.onLine);
@@ -1753,6 +1754,7 @@ export default function TradingJournal() {
   }, []);
 
   const pages = {
+    briefing: { label: "Briefing", icon: Newspaper, sub: "Taegliches Markt-Briefing" },
     check: { label: "Trade Check", icon: Calculator, sub: "Bewerte neue Trade-Setups" },
     trades: { label: "Trade Log", icon: BookOpen, sub: "Alle Trades im Detail" },
     dashboard: { label: "Dashboard", icon: LayoutDashboard, sub: "Übersicht deiner Performance" },
@@ -1761,6 +1763,7 @@ export default function TradingJournal() {
 
   const renderPage = () => {
     switch (page) {
+      case "briefing": return <Briefing onNavigate={navigate} />;
       case "check": return <TradeCheck portfolio={portfolio} tradeList={tradeList} onAddTrade={addTrade} onUpdateTrade={updateTrade} onNavigate={navigate} />;
       case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} />;
       case "dashboard": return <Dashboard portfolio={portfolio} />;

@@ -1,6 +1,7 @@
 // ─── N-Capital Market Data Proxy + Full Index Scanner (Cloudflare Worker) ───
-// Routes: /api/chart, /api/batch, /api/push/*, /api/scan/*
+// Routes: /api/chart, /api/batch, /api/push/*, /api/scan/*, /api/briefing/*
 // Cron: Chunked scan of S&P 500 + DAX 40 (alle 5 Min ein Chunk, voller Scan ~45 Min)
+// KV-Optimized: consolidated scan:state (1R+1W per invocation instead of 5R+6W)
 // Deployment: cd proxy && npx wrangler deploy
 
 import { buildPushHTTPRequest } from "@pushforge/builder";
@@ -53,6 +54,95 @@ const DAX40_SYMBOLS = [
 ];
 
 const ALL_INDEX_SYMBOLS = [...SP500_SYMBOLS, ...DAX40_SYMBOLS];
+
+// ─── Macro Symbols for Market Briefing ───
+
+const MACRO_SYMBOLS = {
+  indices:     [{ symbol: "^GSPC", name: "S&P 500" }, { symbol: "^GDAXI", name: "DAX" }, { symbol: "^DJI", name: "Dow Jones" }, { symbol: "^IXIC", name: "Nasdaq" }],
+  volatility:  [{ symbol: "^VIX", name: "VIX" }],
+  bonds:       [{ symbol: "^TNX", name: "US 10Y Yield" }],
+  commodities: [{ symbol: "GC=F", name: "Gold" }, { symbol: "CL=F", name: "WTI Öl" }],
+  crypto:      [{ symbol: "BTC-USD", name: "Bitcoin" }],
+  currencies:  [{ symbol: "EURUSD=X", name: "EUR/USD" }],
+  futures:     [{ symbol: "ES=F", name: "S&P Futures" }, { symbol: "NQ=F", name: "Nasdaq Futures" }],
+};
+const ALL_MACRO_SYMBOLS = Object.values(MACRO_SYMBOLS).flat().map(m => m.symbol);
+
+// ─── DAX Sector Mapping ───
+
+const DAX_SECTORS = {
+  "Technologie": ["SAP","IFX"],
+  "Automobil": ["MBG","BMW","VOW3","PAH3","P911","CON"],
+  "Finanzen": ["ALV","DBK","CBK","MUV2","DB1"],
+  "Industrie": ["SIE","AIR","MTX","DHL"],
+  "Ruestung": ["RHM"],
+  "Chemie/Pharma": ["BAS","BAYN","MRK","FRE","SHL"],
+  "Energie": ["RWE","ENR"],
+  "Konsum": ["ADS","PUM","BEI","HEN3","ZAL"],
+  "Telekom": ["DTE","SRT3"],
+  "Bau": ["HEI"],
+  "Immobilien": ["QIA"],
+};
+
+// ─── US Sector Mapping (Top-Aktien) ───
+
+const US_SECTORS = {
+  "Technologie": ["AAPL","MSFT","NVDA","AVGO","AMD","CRM","ADBE","ORCL","CSCO","INTC","QCOM","TXN","NOW","SNPS","CDNS","AMAT","LRCX","KLAC","MCHP","NXPI","CRWD","DDOG","PANW","FTNT"],
+  "Finanzen": ["JPM","BAC","WFC","GS","MS","BLK","BX","SCHW","C","AXP","COF","ICE","CME","MCO","SPGI","MMC","AON","PGR","MET","AFL","AIG","TRV","CB"],
+  "Gesundheit": ["UNH","LLY","JNJ","ABBV","MRK","PFE","TMO","ABT","AMGN","MDT","ISRG","BMY","GILD","VRTX","REGN","CI","ELV","HCA","BSX","SYK","DXCM","IDXX","EW"],
+  "Konsum (zykl.)": ["AMZN","TSLA","HD","MCD","NKE","SBUX","TJX","COST","LOW","BKNG","CMG","ROST","ORLY","DG","DLTR","LULU","YUM","DRI"],
+  "Konsum (def.)": ["PG","KO","PEP","WMT","PM","CL","MDLZ","KMB","GIS","HSY","K","KHC","STZ","MO","KR","SYY","ADM"],
+  "Industrie": ["CAT","DE","HON","UNP","RTX","GE","BA","LMT","MMM","EMR","ITW","ETN","PH","ROK","FDX","UPS","WM","RSG","CARR","OTIS"],
+  "Energie": ["XOM","CVX","COP","SLB","EOG","MPC","OXY","VLO","PSX","HAL","DVN","FANG","OKE","WMB","KMI"],
+  "Versorger": ["NEE","DUK","SO","D","AEP","SRE","EXC","ED","WEC","ES"],
+  "Kommunikation": ["META","GOOG","GOOGL","NFLX","DIS","CMCSA","TMUS","T","VZ","CHTR","EA","TTWO"],
+  "Grundstoffe": ["LIN","APD","SHW","ECL","NEM","FCX","NUE","CF","DD","MLM","VMC"],
+};
+
+// ─── Seasonal Data (Hardcoded Historical Averages) ───
+
+const MONTHLY_SEASONALITY = {
+  1:  { sp500: +1.2, dax: +1.5, note: "Januar-Effekt: Small Caps oft stark" },
+  2:  { sp500: -0.1, dax: +0.3, note: "Historisch schwacher Monat, oft Korrektur nach Januar-Rally" },
+  3:  { sp500: +1.0, dax: +1.8, note: "Quartalsende Window-Dressing, Fonds schichten um" },
+  4:  { sp500: +1.5, dax: +2.1, note: "Staerkster Monat historisch, Earnings Season beginnt" },
+  5:  { sp500: +0.2, dax: -0.3, note: "Sell in May — ab Mai historisch schwaechere Phase" },
+  6:  { sp500: +0.1, dax: -0.5, note: "Sommerliche Seitwaertsbewegung beginnt" },
+  7:  { sp500: +1.0, dax: +0.8, note: "Sommererholung, Q2-Earnings" },
+  8:  { sp500: -0.2, dax: -1.0, note: "Schwaechster Monat fuer DAX, duennes Volumen" },
+  9:  { sp500: -0.5, dax: -1.2, note: "September-Effekt: Historisch schwaechster US-Monat" },
+  10: { sp500: +0.9, dax: +1.2, note: "Oktober-Reversal historisch stark" },
+  11: { sp500: +1.5, dax: +2.0, note: "Jahresendrally beginnt" },
+  12: { sp500: +1.3, dax: +1.8, note: "Santa Rally: letzte 5 Handelstage + erste 2 Januar" },
+};
+
+// US Presidential Cycle: year % 4 → 0=Election, 1=Post-Election, 2=Midterm, 3=Pre-Election
+const PRESIDENTIAL_CYCLE = {
+  0: { name: "Wahljahr", sp500Avg: +7.5, note: "Wahljahr: Maerkte meist positiv, Unsicherheit vor Wahl" },
+  1: { name: "Post-Wahljahr", sp500Avg: +3.0, note: "Post-Wahljahr: Neue Politik wird implementiert, oft Enttaeuschung" },
+  2: { name: "Midterm-Jahr", sp500Avg: +5.0, note: "Midterm: H1 oft schwach, ab Oktober starke Rally (Ø +15% H2)" },
+  3: { name: "Pre-Wahljahr", sp500Avg: +12.8, note: "Pre-Wahljahr: Historisch staerkstes Jahr im Zyklus" },
+};
+
+// Key recurring events (approximate dates, month-based)
+const RECURRING_EVENTS_2026 = [
+  { month: 1, day: 29, name: "FOMC-Sitzung", type: "fed" },
+  { month: 3, day: 19, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
+  { month: 3, day: 20, name: "Triple Witching (Grosser Verfall)", type: "options" },
+  { month: 4, day: 14, name: "Earnings Season Q1 startet", type: "earnings" },
+  { month: 5, day: 6, name: "FOMC-Sitzung", type: "fed" },
+  { month: 6, day: 17, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
+  { month: 6, day: 19, name: "Triple Witching", type: "options" },
+  { month: 7, day: 14, name: "Earnings Season Q2 startet", type: "earnings" },
+  { month: 7, day: 29, name: "FOMC-Sitzung", type: "fed" },
+  { month: 9, day: 16, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
+  { month: 9, day: 18, name: "Triple Witching", type: "options" },
+  { month: 10, day: 13, name: "Earnings Season Q3 startet", type: "earnings" },
+  { month: 10, day: 28, name: "FOMC-Sitzung", type: "fed" },
+  { month: 11, day: 3, name: "US Midterm Elections", type: "political" },
+  { month: 12, day: 16, name: "FOMC-Sitzung + Dot Plot", type: "fed" },
+  { month: 12, day: 18, name: "Triple Witching", type: "options" },
+];
 
 const SCAN_DEFAULTS = {
   chunkSize: 24,         // Symbols per chunk (24 × 2 calls = 48 fetches, under 50 subrequest limit)
@@ -502,91 +592,90 @@ async function runChunkedScan(env) {
   // 1. Determine which symbols to scan based on current time
   const { symbols: activeSymbols, mode: currentMode } = getActiveSymbols();
 
-  // 2. Market closed — nothing to do
+  // 2. Load consolidated state (1 KV read instead of 5)
+  const state = (await env.NCAPITAL_KV.get("scan:state", "json")) || {
+    pointer: 0, lastPointer: -1, retryCount: 0,
+    mode: null, totalChunks: 0, totalSymbols: 0,
+    lastRun: null, lastFullScan: null,
+  };
+
+  // 3. Market closed — nothing to do
   if (currentMode === "closed" || activeSymbols.length === 0) {
     console.log(`[Scan] Market closed. Skipping.`);
-    await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
+    state.lastRun = new Date().toISOString();
+    await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
     return { chunk: 0, totalChunks: 0, scanned: 0, mode: "closed" };
   }
 
-  // 3. Load config and compute chunking for active symbols
+  // 4. Load config and compute chunking for active symbols
   const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
   const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
   const parallelBatch = config.parallelBatch || SCAN_DEFAULTS.parallelBatch;
   const totalChunks = Math.ceil(activeSymbols.length / chunkSize);
 
-  // 4. Load previous mode from KV
-  const prevModeData = await env.NCAPITAL_KV.get("scan:mode", "json");
-  const prevMode = prevModeData?.mode || null;
+  // 5. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
+  const prevMode = state.mode;
+  let pointer = state.pointer;
 
-  // 5. Load pointer
-  let pointer = parseInt(await env.NCAPITAL_KV.get("scan:pointer") || "0", 10);
-
-  // 6. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
   if (prevMode !== null && prevMode !== currentMode) {
     console.log(`[Scan] Mode transition: ${prevMode} -> ${currentMode}. Resetting cycle.`);
 
     // Merge partial results from previous cycle if any chunks were completed
-    if (pointer > 0 && prevModeData?.totalChunks) {
-      console.log(`[Scan] Merging partial results (${pointer}/${prevModeData.totalChunks} chunks from ${prevMode}).`);
+    if (pointer > 0 && state.totalChunks) {
+      console.log(`[Scan] Merging partial results (${pointer}/${state.totalChunks} chunks from ${prevMode}).`);
       await mergeAndNotify(env, config, pointer);
-      await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
+      state.lastFullScan = new Date().toISOString();
     }
 
     // Clean stale chunk keys from previous mode
-    const prevChunks = prevModeData?.totalChunks || 0;
-    for (let i = 0; i < prevChunks; i++) {
+    for (let i = 0; i < (state.totalChunks || 0); i++) {
       await env.NCAPITAL_KV.delete(`scan:chunk:${i}`);
     }
 
     // Reset pointer for new mode
     pointer = 0;
-    await env.NCAPITAL_KV.put("scan:pointer", "0");
-    await env.NCAPITAL_KV.put("scan:retryCount", "0");
-    await env.NCAPITAL_KV.put("scan:lastPointer", "-1");
+    state.pointer = 0;
+    state.retryCount = 0;
+    state.lastPointer = -1;
   }
 
-  // 7. Save current mode info to KV
-  await env.NCAPITAL_KV.put("scan:mode", JSON.stringify({
-    mode: currentMode,
-    totalChunks,
-    totalSymbols: activeSymbols.length,
-  }));
+  // 6. Update mode info in state
+  state.mode = currentMode;
+  state.totalChunks = totalChunks;
+  state.totalSymbols = activeSymbols.length;
 
-  // 8. Stuck-pointer detection: if same pointer runs 3+ times, force advance
-  const lastPointer = parseInt(await env.NCAPITAL_KV.get("scan:lastPointer") || "-1", 10);
-  const retryCount = parseInt(await env.NCAPITAL_KV.get("scan:retryCount") || "0", 10);
-
-  if (pointer === lastPointer) {
-    if (retryCount >= 2) {
-      console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks} stuck after ${retryCount + 1} attempts. Skipping.`);
+  // 7. Stuck-pointer detection: if same pointer runs 3+ times, force advance
+  if (pointer === state.lastPointer) {
+    if (state.retryCount >= 2) {
+      console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks} stuck after ${state.retryCount + 1} attempts. Skipping.`);
       await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify([]), { expirationTtl: 7200 });
       const skipNext = pointer + 1;
       if (skipNext >= totalChunks) {
         await mergeAndNotify(env, config, totalChunks);
-        await env.NCAPITAL_KV.put("scan:pointer", "0");
-        await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
+        state.pointer = 0;
+        state.lastFullScan = new Date().toISOString();
       } else {
-        await env.NCAPITAL_KV.put("scan:pointer", String(skipNext));
+        state.pointer = skipNext;
       }
-      await env.NCAPITAL_KV.put("scan:retryCount", "0");
-      await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
+      state.retryCount = 0;
+      state.lastRun = new Date().toISOString();
+      await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
       return { chunk: pointer + 1, totalChunks, scanned: 0, skipped: true, mode: currentMode };
     }
-    await env.NCAPITAL_KV.put("scan:retryCount", String(retryCount + 1));
+    state.retryCount++;
   } else {
-    await env.NCAPITAL_KV.put("scan:retryCount", "0");
+    state.retryCount = 0;
   }
-  await env.NCAPITAL_KV.put("scan:lastPointer", String(pointer));
+  state.lastPointer = pointer;
 
-  // 9. Determine symbols for this chunk from activeSymbols
+  // 8. Determine symbols for this chunk from activeSymbols
   const start = pointer * chunkSize;
   const end = Math.min(start + chunkSize, activeSymbols.length);
   const chunkSymbols = activeSymbols.slice(start, end);
 
   console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks}: ${chunkSymbols.length} symbols (${chunkSymbols[0]}..${chunkSymbols[chunkSymbols.length - 1]})`);
 
-  // 10. Scan in parallel batches (with per-batch timeout safety)
+  // 9. Scan in parallel batches (with per-batch timeout safety)
   const results = [];
   const scanStart = Date.now();
   for (let i = 0; i < chunkSymbols.length; i += parallelBatch) {
@@ -601,22 +690,24 @@ async function runChunkedScan(env) {
     results.push(...batchResults);
   }
 
-  // 11. Write chunk results to KV (TTL 2h)
+  // 10. Write chunk results to KV (TTL 2h)
   await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify(results), { expirationTtl: 7200 });
 
-  // 12. Advance pointer or merge
+  // 11. Advance pointer or merge
   const nextPointer = pointer + 1;
 
   if (nextPointer >= totalChunks) {
     console.log(`[Scan] [${currentMode}] All ${totalChunks} chunks done. Merging...`);
     await mergeAndNotify(env, config, totalChunks);
-    await env.NCAPITAL_KV.put("scan:pointer", "0");
-    await env.NCAPITAL_KV.put("scan:lastFullScan", new Date().toISOString());
+    state.pointer = 0;
+    state.lastFullScan = new Date().toISOString();
   } else {
-    await env.NCAPITAL_KV.put("scan:pointer", String(nextPointer));
+    state.pointer = nextPointer;
   }
 
-  await env.NCAPITAL_KV.put("scan:lastRun", new Date().toISOString());
+  // 12. Save consolidated state (1 KV write instead of 6)
+  state.lastRun = new Date().toISOString();
+  await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
 
   return { chunk: pointer + 1, totalChunks, scanned: results.length, mode: currentMode };
 }
@@ -642,35 +733,40 @@ async function mergeAndNotify(env, config, totalChunks) {
     .filter((r) => r.swing.total >= threshold)
     .sort((a, b) => b.swing.total - a.swing.total);
 
-  // Save merged results (TTL 2h)
-  await env.NCAPITAL_KV.put("scan:results", JSON.stringify(filtered), { expirationTtl: 7200 });
-
-  // Update stats
+  // Save merged results + stats in one combined write (saves 1 KV write)
   const stats = {
     totalScanned: allResults.length,
     hits: filtered.length,
     errors: allResults.filter((r) => r.swing.error || r.intraday.error).length,
     timestamp: new Date().toISOString(),
   };
-  await env.NCAPITAL_KV.put("scan:stats", JSON.stringify(stats));
+  await Promise.all([
+    env.NCAPITAL_KV.put("scan:results", JSON.stringify(filtered), { expirationTtl: 7200 }),
+    env.NCAPITAL_KV.put("scan:stats", JSON.stringify(stats)),
+  ]);
 
   console.log(`[Scan] Merged: ${allResults.length} total, ${filtered.length} hits (swing >= ${threshold}), ${stats.errors} errors`);
 
   // Send push notifications for high-score results
+  const notifyResults = filtered.filter((r) => r.swing.total >= notifyThreshold);
+  if (notifyResults.length === 0) return;
+
   const subscriptions = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
   if (subscriptions.length === 0) return;
 
-  const notifyResults = filtered.filter((r) => r.swing.total >= notifyThreshold);
+  // Batch-read all cooldowns in parallel (saves N sequential reads)
+  const cooldownKeys = notifyResults.map((r) => `cooldown:${r.displaySymbol}`);
+  const cooldownValues = await Promise.all(cooldownKeys.map((k) => env.NCAPITAL_KV.get(k)));
+
   const notifications = [];
   const validSubs = [...subscriptions];
+  const cooldownWrites = [];
 
-  for (const r of notifyResults) {
-    const cooldownKey = `cooldown:${r.displaySymbol}`;
-    const cooldown = await env.NCAPITAL_KV.get(cooldownKey);
-    if (cooldown) continue;
+  for (let ri = 0; ri < notifyResults.length; ri++) {
+    if (cooldownValues[ri]) continue; // Already notified recently
+    const r = notifyResults[ri];
 
     const topSignals = r.swing.signals.slice(0, 3).join(" + ");
-
     const title = `${r.displaySymbol} Swing ${r.swing.total}`;
     const body = `${r.price.toFixed(2)} ${r.currency} — ${topSignals || "Starkes Setup"}`;
     const tag = `scan-${r.displaySymbol}`;
@@ -683,23 +779,294 @@ async function mergeAndNotify(env, config, totalChunks) {
     }
 
     if (anySent) {
-      await env.NCAPITAL_KV.put(cooldownKey, new Date().toISOString(), { expirationTtl: 3600 });
+      cooldownWrites.push(env.NCAPITAL_KV.put(cooldownKeys[ri], "1", { expirationTtl: 3600 }));
       notifications.push({ symbol: r.displaySymbol, score: r.swing.total, title });
     }
   }
 
-  // Clean expired subscriptions
+  // Batch-write all cooldowns + cleanup in parallel
+  const writes = [...cooldownWrites];
   if (validSubs.length < subscriptions.length) {
-    await env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(validSubs));
+    writes.push(env.NCAPITAL_KV.put("push:subscriptions", JSON.stringify(validSubs)));
   }
+  if (writes.length > 0) await Promise.all(writes);
 
   console.log(`[Scan] Notifications sent: ${notifications.length}`);
 }
 
+// ─── Market Briefing Generation ───
+
+function getCETHour() {
+  const now = new Date();
+  const cetStr = now.toLocaleString("en-US", { timeZone: "Europe/Berlin", hour: "numeric", minute: "numeric", hour12: false });
+  const [h, m] = cetStr.split(":").map(Number);
+  return h + m / 60;
+}
+
+async function fetchMacroData() {
+  const results = {};
+  const fetches = await Promise.all(
+    ALL_MACRO_SYMBOLS.map(async (sym) => {
+      const json = await fetchYahooJSON(sym, { range: "5d", interval: "1d", includeAdjustedClose: "true" }, 10000, true);
+      return { symbol: sym, json };
+    })
+  );
+  for (const { symbol, json } of fetches) {
+    const parsed = !json.error ? parseYahooCandles(json) : null;
+    if (parsed && parsed.candles.length >= 2) {
+      const candles = parsed.candles;
+      const last = candles[candles.length - 1];
+      const prev = candles[candles.length - 2];
+      const price = last.close;
+      const change = ((price - prev.close) / prev.close) * 100;
+      results[symbol] = {
+        price, change, prevClose: prev.close, high: last.high, low: last.low,
+        currency: parsed.meta?.currency || "USD",
+        trend5d: candles.length >= 5 ? ((price - candles[0].close) / candles[0].close) * 100 : null,
+      };
+    } else {
+      results[symbol] = { price: 0, change: 0, prevClose: 0, error: json.error || "No data" };
+    }
+  }
+  return results;
+}
+
+function computeIntermarketSignals(macro) {
+  const signals = [];
+  const vix = macro["^VIX"];
+  if (vix && !vix.error) {
+    const level = vix.price >= 30 ? "Extrem hoch" : vix.price >= 20 ? "Erhoht" : vix.price >= 15 ? "Normal" : "Niedrig";
+    const signal = vix.price >= 30 ? "RISIKO" : vix.price >= 20 ? "VORSICHT" : vix.price >= 15 ? "NEUTRAL" : "GIER";
+    signals.push({ indicator: "VIX", value: vix.price.toFixed(2), change: vix.change.toFixed(2), interpretation: level, signal });
+  }
+  const gold = macro["GC=F"];
+  if (gold && !gold.error) {
+    signals.push({ indicator: "Gold", value: gold.price.toFixed(2), change: gold.change.toFixed(2), interpretation: gold.change > 0 ? "steigend" : "fallend", signal: gold.change > 1 ? "RISK-OFF" : gold.change < -1 ? "RISK-ON" : "NEUTRAL" });
+  }
+  const tnx = macro["^TNX"];
+  if (tnx && !tnx.error) {
+    const dir = tnx.change > 0.02 ? "steigend" : tnx.change < -0.02 ? "fallend" : "stabil";
+    const sig = tnx.price > 4.5 ? "RESTRIKTIV" : tnx.price < 3.5 ? "EXPANSIV" : "NEUTRAL";
+    signals.push({ indicator: "10Y Yield", value: `${tnx.price.toFixed(2)}%`, change: tnx.change.toFixed(2), interpretation: dir, signal: sig });
+  }
+  const oil = macro["CL=F"];
+  if (oil && !oil.error) {
+    signals.push({ indicator: "WTI Oel", value: oil.price.toFixed(2), change: oil.change.toFixed(2), interpretation: oil.change > 0 ? "steigend" : "fallend", signal: Math.abs(oil.change) > 3 ? (oil.change > 0 ? "INFLATIONAER" : "DEFLATIONAER") : "NEUTRAL" });
+  }
+  const eur = macro["EURUSD=X"];
+  if (eur && !eur.error) {
+    signals.push({ indicator: "EUR/USD", value: eur.price.toFixed(4), change: eur.change.toFixed(2), interpretation: eur.change > 0 ? "EUR staerker" : "USD staerker", signal: "INFO" });
+  }
+  const btc = macro["BTC-USD"];
+  if (btc && !btc.error) {
+    signals.push({ indicator: "Bitcoin", value: btc.price.toFixed(0), change: btc.change.toFixed(2), interpretation: btc.change > 0 ? "Risk-On" : "Risk-Off", signal: Math.abs(btc.change) > 5 ? "VOLATIL" : "NEUTRAL" });
+  }
+  return signals;
+}
+
+function computeSectorRotation(scanResults, region) {
+  const sectorMap = region === "EU" ? DAX_SECTORS : US_SECTORS;
+  const sectors = {};
+
+  for (const result of scanResults) {
+    const sym = result.displaySymbol;
+    let sectorName = null;
+    for (const [sector, syms] of Object.entries(sectorMap)) {
+      if (syms.includes(sym)) { sectorName = sector; break; }
+    }
+    if (!sectorName) continue; // Skip unknown sectors
+
+    if (!sectors[sectorName]) sectors[sectorName] = { count: 0, totalSwing: 0, totalChange: 0, symbols: [] };
+    sectors[sectorName].count++;
+    sectors[sectorName].totalSwing += result.swing.total;
+    sectors[sectorName].totalChange += result.change;
+    sectors[sectorName].symbols.push({ symbol: sym, swingScore: result.swing.total, change: result.change });
+  }
+
+  return Object.entries(sectors)
+    .map(([name, d]) => ({
+      sector: name, hitCount: d.count,
+      avgSwingScore: Math.round(d.totalSwing / d.count),
+      avgChange: Math.round(d.totalChange / d.count * 100) / 100,
+      topSymbols: d.symbols.sort((a, b) => b.swingScore - a.swingScore).slice(0, 3),
+    }))
+    .sort((a, b) => b.avgSwingScore - a.avgSwingScore);
+}
+
+function generateTradeSetups(scanResults, maxSetups = 5) {
+  return scanResults
+    .filter(r => r.swing.total >= 65 && r.price > 0)
+    .slice(0, maxSetups)
+    .map(r => {
+      const entry = r.price;
+      const stopDist = entry * 0.05;
+      const stop = Math.round((entry - stopDist) * 100) / 100;
+      const risk = entry - stop;
+      const target = Math.round((entry + risk * 2) * 100) / 100;
+      const crv = risk > 0 ? ((target - entry) / risk).toFixed(1) : "0";
+      return {
+        symbol: r.displaySymbol, currency: r.currency,
+        swingScore: r.swing.total, intradayScore: r.intraday.total,
+        combinedScore: r.combinedScore || Math.round(r.swing.total * 0.6 + r.intraday.total * 0.4),
+        price: entry, change: r.change, entry: Math.round(entry * 100) / 100, stop, target, crv,
+        signals: r.swing.signals.slice(0, 3), factors: r.swing.factors,
+      };
+    });
+}
+
+function getSeasonalContext() {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+  const day = now.getDate();
+  const cycleYear = year % 4; // 0=Election, 1=Post, 2=Midterm, 3=Pre
+
+  const monthData = MONTHLY_SEASONALITY[month] || {};
+  const cycleData = PRESIDENTIAL_CYCLE[cycleYear] || {};
+
+  // Find upcoming events (next 14 days)
+  const upcomingEvents = RECURRING_EVENTS_2026
+    .filter(e => {
+      const eventDate = new Date(year, e.month - 1, e.day);
+      const diffDays = (eventDate - now) / (1000 * 60 * 60 * 24);
+      return diffDays >= -1 && diffDays <= 14;
+    })
+    .map(e => ({ ...e, daysUntil: Math.ceil((new Date(year, e.month - 1, e.day) - now) / (1000 * 60 * 60 * 24)) }));
+
+  // Midterm-specific context
+  let midtermNote = null;
+  if (cycleYear === 2) {
+    if (month <= 6) midtermNote = "Midterm H1: Historisch schwaecher (Ø -1.5% S&P). Vorsichtig positionieren.";
+    else if (month <= 9) midtermNote = "Midterm Sommer: Typisches Tief kommt in Sep/Okt. Geduld fuer den Bounce.";
+    else midtermNote = "Midterm Q4: Historisch starke Rally! Ø +15% H2. Beste Phase fuer Swing-Trades.";
+  }
+
+  return {
+    month, year,
+    monthName: ["", "Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"][month],
+    monthPattern: { sp500Avg: monthData.sp500 || 0, daxAvg: monthData.dax || 0, note: monthData.note || "" },
+    presidentialCycle: { year: cycleYear, name: cycleData.name || "", sp500Avg: cycleData.sp500Avg || 0, note: cycleData.note || "" },
+    midtermNote,
+    upcomingEvents,
+  };
+}
+
+async function generateBriefing(env, type) {
+  const startTime = Date.now();
+
+  // 1. Fetch macro data (12 symbols)
+  const macro = await fetchMacroData();
+
+  // 2. Read latest scan results (1 KV read)
+  const scanResults = (await env.NCAPITAL_KV.get("scan:results", "json")) || [];
+
+  // 3. Compute analyses
+  const intermarketSignals = computeIntermarketSignals(macro);
+  const seasonalContext = getSeasonalContext();
+
+  // 4. Build macro overview
+  const macroOverview = Object.entries(MACRO_SYMBOLS).map(([category, symbols]) => ({
+    category,
+    items: symbols.map(s => ({ name: s.name, symbol: s.symbol, ...(macro[s.symbol] || { price: 0, change: 0, error: "Keine Daten" }) })),
+  }));
+
+  // 5. Region-specific content
+  let regionFocus, scannerHits, sectorRotation, tradeSetups;
+  if (type === "morning") {
+    regionFocus = "EU";
+    const daxResults = scanResults.filter(r => r.symbol.endsWith(".DE"));
+    scannerHits = daxResults.slice(0, 15);
+    sectorRotation = computeSectorRotation(daxResults, "EU");
+    tradeSetups = generateTradeSetups(daxResults, 5);
+  } else {
+    regionFocus = "US";
+    const usResults = scanResults.filter(r => !r.symbol.endsWith(".DE"));
+    scannerHits = usResults.slice(0, 15);
+    sectorRotation = computeSectorRotation(usResults, "US");
+    tradeSetups = generateTradeSetups(usResults, 5);
+  }
+
+  // 6. Assemble briefing
+  const briefing = {
+    type, regionFocus,
+    generatedAt: new Date().toISOString(),
+    generationMs: Date.now() - startTime,
+    seasonalContext,
+    macroOverview,
+    intermarketSignals,
+    sectorRotation,
+    scannerHits: scannerHits.map(r => ({
+      symbol: r.displaySymbol, yahooSymbol: r.symbol, currency: r.currency,
+      price: r.price, change: r.change,
+      swingScore: r.swing.total, intradayScore: r.intraday.total,
+      combinedScore: r.combinedScore || Math.round(r.swing.total * 0.6 + r.intraday.total * 0.4),
+      signals: [...r.swing.signals, ...r.intraday.signals].slice(0, 4),
+      factors: r.swing.factors,
+    })),
+    tradeSetups,
+    futures: { es: macro["ES=F"] || null, nq: macro["NQ=F"] || null },
+  };
+
+  // 7. Store in KV (TTL 12h)
+  await env.NCAPITAL_KV.put(`briefing:${type}`, JSON.stringify(briefing), { expirationTtl: 43200 });
+
+  console.log(`[Briefing] ${type} generated in ${briefing.generationMs}ms. ${scannerHits.length} hits, ${tradeSetups.length} setups.`);
+  return briefing;
+}
+
+// ─── Briefing Route Handlers ───
+
+async function handleBriefingRoutes(url, request, env) {
+  const path = url.pathname;
+
+  // GET /api/briefing/latest — returns both, auto-generates if stale
+  if (path === "/api/briefing/latest" && request.method === "GET") {
+    const today = new Date().toISOString().slice(0, 10);
+    const ceTime = getCETHour();
+
+    let [morning, afternoon] = await Promise.all([
+      env.NCAPITAL_KV.get("briefing:morning", "json"),
+      env.NCAPITAL_KV.get("briefing:afternoon", "json"),
+    ]);
+
+    // Auto-generate morning if stale and after 07:30 CET
+    if ((!morning || morning.generatedAt?.slice(0, 10) !== today) && ceTime >= 7.5) {
+      morning = await generateBriefing(env, "morning");
+    }
+    // Auto-generate afternoon if stale and after 14:00 CET
+    if ((!afternoon || afternoon.generatedAt?.slice(0, 10) !== today) && ceTime >= 14) {
+      afternoon = await generateBriefing(env, "afternoon");
+    }
+
+    return jsonResponse({ morning, afternoon }, 200, 120);
+  }
+
+  // GET /api/briefing/morning or /api/briefing/afternoon
+  if ((path === "/api/briefing/morning" || path === "/api/briefing/afternoon") && request.method === "GET") {
+    const type = path.endsWith("morning") ? "morning" : "afternoon";
+    const briefing = await env.NCAPITAL_KV.get(`briefing:${type}`, "json");
+    if (!briefing) return jsonResponse({ error: `Kein ${type} Briefing verfuegbar` }, 404);
+    return jsonResponse(briefing, 200, 120);
+  }
+
+  // POST /api/briefing/generate — manual trigger
+  if (path === "/api/briefing/generate" && request.method === "POST") {
+    let body;
+    try { body = await request.json(); } catch { body = {}; }
+    const type = body.type === "afternoon" ? "afternoon" : "morning";
+    const briefing = await generateBriefing(env, type);
+    return jsonResponse({ ok: true, type, generationMs: briefing.generationMs, hits: briefing.scannerHits.length, setups: briefing.tradeSetups.length });
+  }
+
+  return null;
+}
+
 // ─── HTTP Route Handlers ───
 
-// Migrate old single subscription to array format
+// Migrate old single subscription to array format (one-time, skips if already done)
+let migrationDone = false;
 async function migrateSubscriptions(env) {
+  if (migrationDone) return;
   const oldSub = await env.NCAPITAL_KV.get("push:subscription", "json");
   if (oldSub) {
     const existing = (await env.NCAPITAL_KV.get("push:subscriptions", "json")) || [];
@@ -709,6 +1076,7 @@ async function migrateSubscriptions(env) {
     }
     await env.NCAPITAL_KV.delete("push:subscription");
   }
+  migrationDone = true;
 }
 
 async function handlePushRoutes(url, request, env) {
@@ -724,17 +1092,14 @@ async function handlePushRoutes(url, request, env) {
 
   // GET /api/push/status
   if (path === "/api/push/status" && request.method === "GET") {
-    const [subs, lastRun, lastResults] = await Promise.all([
+    const [subs, state] = await Promise.all([
       env.NCAPITAL_KV.get("push:subscriptions", "json"),
-      env.NCAPITAL_KV.get("scan:lastRun"),
-      env.NCAPITAL_KV.get("scan:lastResults", "json"),
+      env.NCAPITAL_KV.get("scan:state", "json"),
     ]);
     return jsonResponse({
       subscribed: !!(subs && subs.length > 0),
       deviceCount: subs ? subs.length : 0,
-      lastRun,
-      resultCount: lastResults?.length || 0,
-      results: lastResults || [],
+      lastRun: state?.lastRun || null,
     }, 200, 0);
   }
 
@@ -830,52 +1195,51 @@ async function handlePushRoutes(url, request, env) {
 async function handleScanRoutes(url, request, env) {
   const path = url.pathname;
 
-  // GET /api/scan/results — filtered scan results from KV
+  // GET /api/scan/results — filtered scan results from KV (2 reads: results + state)
   if (path === "/api/scan/results" && request.method === "GET") {
-    const results = (await env.NCAPITAL_KV.get("scan:results", "json")) || [];
-    const lastFullScan = await env.NCAPITAL_KV.get("scan:lastFullScan");
-    return jsonResponse({ results, lastFullScan, count: results.length }, 200, 60);
+    const [results, state] = await Promise.all([
+      env.NCAPITAL_KV.get("scan:results", "json"),
+      env.NCAPITAL_KV.get("scan:state", "json"),
+    ]);
+    return jsonResponse({ results: results || [], lastFullScan: state?.lastFullScan || null, count: (results || []).length }, 200, 60);
   }
 
-  // GET /api/scan/status — scan progress info (mode-aware)
+  // GET /api/scan/status — scan progress info (mode-aware, 2 KV reads instead of 7)
   if (path === "/api/scan/status" && request.method === "GET") {
-    const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
     const { mode: liveMode, symbols: liveSymbols } = getActiveSymbols();
-    const modeData = await env.NCAPITAL_KV.get("scan:mode", "json");
-    const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
-    const totalChunks = modeData?.totalChunks || Math.ceil(liveSymbols.length / chunkSize);
-
-    const [pointer, lastRun, lastFullScan, stats, retryCount] = await Promise.all([
-      env.NCAPITAL_KV.get("scan:pointer"),
-      env.NCAPITAL_KV.get("scan:lastRun"),
-      env.NCAPITAL_KV.get("scan:lastFullScan"),
+    const [state, config, stats] = await Promise.all([
+      env.NCAPITAL_KV.get("scan:state", "json"),
+      env.NCAPITAL_KV.get("scan:config", "json"),
       env.NCAPITAL_KV.get("scan:stats", "json"),
-      env.NCAPITAL_KV.get("scan:retryCount"),
     ]);
+    const cfg = config || SCAN_DEFAULTS;
+    const s = state || { pointer: 0, mode: null, totalChunks: 0, totalSymbols: 0, lastRun: null, lastFullScan: null, retryCount: 0 };
+    const chunkSize = cfg.chunkSize || SCAN_DEFAULTS.chunkSize;
+
     return jsonResponse({
-      currentChunk: parseInt(pointer || "0", 10),
-      totalChunks,
-      totalSymbols: modeData?.totalSymbols || liveSymbols.length,
+      currentChunk: s.pointer || 0,
+      totalChunks: s.totalChunks || Math.ceil(liveSymbols.length / chunkSize),
+      totalSymbols: s.totalSymbols || liveSymbols.length,
       sp500Count: SP500_SYMBOLS.length,
       dax40Count: DAX40_SYMBOLS.length,
-      scanMode: modeData?.mode || liveMode,
+      scanMode: s.mode || liveMode,
       liveMode,
-      lastRun,
-      lastFullScan,
+      lastRun: s.lastRun,
+      lastFullScan: s.lastFullScan,
       stats: stats || null,
-      config,
-      retryCount: parseInt(retryCount || "0", 10),
+      config: cfg,
+      retryCount: s.retryCount || 0,
     }, 200, 0);
   }
 
-  // POST /api/scan/reset — reset scan pointer + mode
+  // POST /api/scan/reset — reset scan state (1 KV write instead of 4)
   if (path === "/api/scan/reset" && request.method === "POST") {
-    await Promise.all([
-      env.NCAPITAL_KV.put("scan:pointer", "0"),
-      env.NCAPITAL_KV.put("scan:retryCount", "0"),
-      env.NCAPITAL_KV.put("scan:lastPointer", "-1"),
-      env.NCAPITAL_KV.delete("scan:mode"),
-    ]);
+    const state = (await env.NCAPITAL_KV.get("scan:state", "json")) || {};
+    state.pointer = 0;
+    state.retryCount = 0;
+    state.lastPointer = -1;
+    state.mode = null;
+    await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
     return jsonResponse({ ok: true, message: "Scan pointer and mode reset" });
   }
 
@@ -936,6 +1300,13 @@ export default {
       return jsonResponse({ error: "Unknown scan endpoint" }, 404);
     }
 
+    // ── Briefing Routes ──
+    if (url.pathname.startsWith("/api/briefing/")) {
+      const resp = await handleBriefingRoutes(url, request, env);
+      if (resp) return resp;
+      return jsonResponse({ error: "Unknown briefing endpoint" }, 404);
+    }
+
     // ── Existing GET-only routes ──
     if (request.method !== "GET") {
       return new Response("Method not allowed", { status: 405, headers: CORS_HEADERS });
@@ -970,12 +1341,15 @@ export default {
     const match = url.pathname.match(/^\/api\/chart\/(.+)$/);
     if (!match) {
       return jsonResponse({
-        error: "Not found. Use /api/chart/{symbol}, /api/batch, or /api/push/*",
+        error: "Not found. Use /api/chart/{symbol}, /api/batch, /api/push/*, /api/scan/*, or /api/briefing/*",
         endpoints: [
           "/api/chart/AAPL?range=1y&interval=1d",
           "/api/batch?symbols=AAPL,MSFT,NVDA&range=1y&interval=1d",
           "/api/push/vapid-public-key",
           "/api/push/status",
+          "/api/briefing/latest",
+          "/api/briefing/morning",
+          "/api/briefing/afternoon",
         ],
       }, 404);
     }
