@@ -583,7 +583,7 @@ function TradeSetupsSection({ setups, isMobile, onNavigate }) {
                   width: "100%", padding: "8px 0", background: `${C.accent}15`, color: C.accent,
                   border: `1px solid ${C.accent}30`, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
                 }}>
-                  Trade Check starten \u2192
+                  Trade Check starten {"\u2192"}
                 </button>
               )}
             </div>
