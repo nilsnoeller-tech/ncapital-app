@@ -1739,8 +1739,6 @@ export default function TradingJournal() {
     return () => window.removeEventListener("ncapital-auth-error", onAuthError);
   }, []);
 
-  if (!authed) return <LoginPage onLogin={handleLogin} />;
-
   // Offline-Detection
   useEffect(() => {
     const goOnline = () => setIsOffline(false);
@@ -1767,6 +1765,9 @@ export default function TradingJournal() {
     setPage(p);
     setMenuOpen(false);
   }, []);
+
+  // Auth Guard — AFTER all hooks (React rules of hooks)
+  if (!authed) return <LoginPage onLogin={handleLogin} />;
 
   const pages = {
     briefing: { label: "Briefing", icon: Newspaper, sub: "Taegliches Markt-Briefing" },
