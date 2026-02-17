@@ -1755,10 +1755,10 @@ export default function TradingJournal() {
 
   const pages = {
     briefing: { label: "Briefing", icon: Newspaper, sub: "Taegliches Markt-Briefing" },
+    watchlist: { label: "Screener", icon: Activity, sub: "Scanner fuer Swing- & Intraday-Setups" },
     check: { label: "Trade Check", icon: Calculator, sub: "Bewerte neue Trade-Setups" },
     trades: { label: "Trade Log", icon: BookOpen, sub: "Alle Trades im Detail" },
     dashboard: { label: "Dashboard", icon: LayoutDashboard, sub: "Übersicht deiner Performance" },
-    watchlist: { label: "Watchlist", icon: Eye, sub: "Scanner fuer Swing- & Intraday-Setups" },
   };
 
   const renderPage = () => {

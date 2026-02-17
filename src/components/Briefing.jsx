@@ -439,6 +439,104 @@ function VixTooltip({ price, vixHistory, isMobile }) {
   );
 }
 
+// 52-Week Range Tooltip for all macro values
+function RangeTooltip({ item, isMobile }) {
+  const [show, setShow] = useState(false);
+  const w52 = item.w52;
+  if (!w52) return null;
+
+  const pos = Math.max(0, Math.min(100, w52.rangePosition || 0));
+  // Color based on position: near low = red, near high = green (inverted for VIX)
+  const isVix = item.symbol === "^VIX";
+  const posColor = isVix
+    ? (pos > 75 ? C.red : pos > 50 ? C.orange : pos > 25 ? C.yellow : C.green)
+    : (pos > 75 ? C.green : pos > 50 ? C.yellow : pos > 25 ? C.orange : C.red);
+
+  const fmtPrice = (p) => {
+    if (p == null) return "-";
+    return p.toLocaleString("de-DE", { maximumFractionDigits: p > 100 ? 0 : p > 10 ? 1 : 2 });
+  };
+
+  return (
+    <div
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+      onClick={() => setShow(s => !s)}
+    >
+      {/* Mini range bar always visible */}
+      <div style={{ width: 40, height: 4, background: C.border, borderRadius: 2, position: "relative" }}>
+        <div style={{ position: "absolute", left: `${pos}%`, top: -1, width: 5, height: 6, background: posColor, borderRadius: 1, transform: "translateX(-50%)" }} />
+      </div>
+      <span style={{ fontSize: 9, color: C.textDim }}>{pos}%</span>
+
+      {show && (
+        <div style={{
+          position: "absolute", top: "100%", left: isMobile ? -80 : -20, zIndex: 100, marginTop: 6,
+          background: C.card, border: `1px solid ${C.borderLight}`, borderRadius: 12, padding: 14,
+          width: isMobile ? 250 : 270, boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 10 }}>
+            {item.name} — 52W Range
+          </div>
+
+          {/* Visual range bar */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+              <span style={{ fontSize: 10, color: C.red, fontWeight: 600 }}>Low {fmtPrice(w52.low)}</span>
+              <span style={{ fontSize: 10, color: C.green, fontWeight: 600 }}>High {fmtPrice(w52.high)}</span>
+            </div>
+            <div style={{ height: 10, background: C.bg, borderRadius: 5, position: "relative", border: `1px solid ${C.border}` }}>
+              {/* Gradient bar */}
+              <div style={{
+                position: "absolute", inset: 1, borderRadius: 4,
+                background: `linear-gradient(to right, ${C.red}60, ${C.yellow}60, ${C.green}60)`,
+              }} />
+              {/* Current price marker */}
+              <div style={{
+                position: "absolute", left: `${pos}%`, top: -3, width: 4, height: 16,
+                background: C.text, borderRadius: 2, transform: "translateX(-50%)",
+                boxShadow: "0 0 6px rgba(255,255,255,0.4)",
+              }} />
+            </div>
+            <div style={{ textAlign: "center", marginTop: 4 }}>
+              <span style={{ fontSize: 11, color: posColor, fontWeight: 700 }}>
+                Aktuell: {fmtPrice(item.price)} ({pos}% der Range)
+              </span>
+            </div>
+          </div>
+
+          {/* Stats grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px" }}>
+              <div style={{ fontSize: 10, color: C.textDim }}>Abstand 52W-High</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: w52.pctFromHigh < -10 ? C.red : w52.pctFromHigh < -3 ? C.orange : C.green, fontFamily: "monospace" }}>
+                {w52.pctFromHigh != null ? `${w52.pctFromHigh > 0 ? "+" : ""}${w52.pctFromHigh.toFixed(1)}%` : "-"}
+              </div>
+            </div>
+            <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px" }}>
+              <div style={{ fontSize: 10, color: C.textDim }}>Abstand 52W-Low</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.green, fontFamily: "monospace" }}>
+                {w52.pctFromLow != null ? `+${w52.pctFromLow.toFixed(1)}%` : "-"}
+              </div>
+            </div>
+            <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px" }}>
+              <div style={{ fontSize: 10, color: C.textDim }}>{"\u00D8"} 52W</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text, fontFamily: "monospace" }}>{fmtPrice(w52.avg)}</div>
+            </div>
+            <div style={{ background: C.bg, borderRadius: 8, padding: "6px 8px" }}>
+              <div style={{ fontSize: 10, color: C.textDim }}>5d Trend</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: item.trend5d > 0 ? C.green : item.trend5d < 0 ? C.red : C.textDim, fontFamily: "monospace" }}>
+                {item.trend5d != null ? `${item.trend5d > 0 ? "+" : ""}${item.trend5d.toFixed(1)}%` : "-"}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MacroSection({ macro, vixHistory, isMobile }) {
   if (!macro?.length) return null;
 
@@ -462,7 +560,6 @@ function MacroSection({ macro, vixHistory, isMobile }) {
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10 }}>
         {macro.flatMap(group => group.items.map(item => {
-          const meta = categoryMeta[group.category] || {};
           const isVix = item.symbol === "^VIX";
           // VIX special color logic
           let priceColor = C.text;
@@ -483,14 +580,23 @@ function MacroSection({ macro, vixHistory, isMobile }) {
                 </span>
                 <ChangeDisplay change={item.change} style={{ fontSize: 12 }} />
               </div>
+              {/* VIX: special classification + history tooltip */}
               {isVix && item.price > 0 && (
-                <div style={{ marginTop: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                   <VixTooltip price={item.price} vixHistory={vixHistory} isMobile={isMobile} />
+                  {item.w52 && <RangeTooltip item={item} isMobile={isMobile} />}
                 </div>
               )}
-              {!isVix && item.trend5d != null && (
-                <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
-                  5d: <span style={{ color: item.trend5d > 0 ? C.green : item.trend5d < 0 ? C.red : C.textDim }}>{item.trend5d > 0 ? "+" : ""}{item.trend5d.toFixed(1)}%</span>
+              {/* All others: 52W range bar */}
+              {!isVix && (
+                <div style={{ marginTop: 4 }}>
+                  {item.w52 ? (
+                    <RangeTooltip item={item} isMobile={isMobile} />
+                  ) : item.trend5d != null ? (
+                    <div style={{ fontSize: 10, color: C.textDim }}>
+                      5d: <span style={{ color: item.trend5d > 0 ? C.green : item.trend5d < 0 ? C.red : C.textDim }}>{item.trend5d > 0 ? "+" : ""}{item.trend5d.toFixed(1)}%</span>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

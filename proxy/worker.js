@@ -807,26 +807,44 @@ async function fetchMacroData() {
   const results = {};
   const fetches = await Promise.all(
     ALL_MACRO_SYMBOLS.map(async (sym) => {
-      const json = await fetchYahooJSON(sym, { range: "5d", interval: "1d", includeAdjustedClose: "true" }, 10000, true);
-      return { symbol: sym, json };
+      const json = await fetchYahooJSON(sym, { range: "1y", interval: "1wk", includeAdjustedClose: "true" }, 10000, true);
+      // Also fetch 5d for accurate daily change + 5d trend
+      const json5d = await fetchYahooJSON(sym, { range: "5d", interval: "1d", includeAdjustedClose: "true" }, 10000, true);
+      return { symbol: sym, json, json5d };
     })
   );
-  for (const { symbol, json } of fetches) {
-    const parsed = !json.error ? parseYahooCandles(json) : null;
-    if (parsed && parsed.candles.length >= 2) {
-      const candles = parsed.candles;
+  for (const { symbol, json, json5d } of fetches) {
+    // Daily data for price/change/trend
+    const parsed5d = !json5d.error ? parseYahooCandles(json5d) : null;
+    let price = 0, change = 0, prevClose = 0, high = 0, low = 0, currency = "USD", trend5d = null;
+    if (parsed5d && parsed5d.candles.length >= 2) {
+      const candles = parsed5d.candles;
       const last = candles[candles.length - 1];
       const prev = candles[candles.length - 2];
-      const price = last.close;
-      const change = ((price - prev.close) / prev.close) * 100;
-      results[symbol] = {
-        price, change, prevClose: prev.close, high: last.high, low: last.low,
-        currency: parsed.meta?.currency || "USD",
-        trend5d: candles.length >= 5 ? ((price - candles[0].close) / candles[0].close) * 100 : null,
-      };
-    } else {
-      results[symbol] = { price: 0, change: 0, prevClose: 0, error: json.error || "No data" };
+      price = last.close;
+      change = ((price - prev.close) / prev.close) * 100;
+      prevClose = prev.close;
+      high = last.high;
+      low = last.low;
+      currency = parsed5d.meta?.currency || "USD";
+      trend5d = candles.length >= 5 ? ((price - candles[0].close) / candles[0].close) * 100 : null;
     }
+    // Weekly data for 52W range
+    const parsed1y = !json.error ? parseYahooCandles(json) : null;
+    let w52 = null;
+    if (parsed1y && parsed1y.candles.length >= 4) {
+      const closes = parsed1y.candles.map(c => c.close);
+      const highs = parsed1y.candles.map(c => c.high);
+      const lows = parsed1y.candles.map(c => c.low).filter(l => l > 0);
+      const w52High = Math.max(...highs);
+      const w52Low = Math.min(...lows);
+      const avg = closes.reduce((a, b) => a + b, 0) / closes.length;
+      const pctFromHigh = price > 0 && w52High > 0 ? ((price - w52High) / w52High) * 100 : null;
+      const pctFromLow = price > 0 && w52Low > 0 ? ((price - w52Low) / w52Low) * 100 : null;
+      const rangePosition = w52High > w52Low ? ((price - w52Low) / (w52High - w52Low)) * 100 : 50;
+      w52 = { high: w52High, low: w52Low, avg: Math.round(avg * 100) / 100, pctFromHigh, pctFromLow, rangePosition: Math.round(rangePosition) };
+    }
+    results[symbol] = { price, change, prevClose, high, low, currency, trend5d, w52 };
   }
   return results;
 }
