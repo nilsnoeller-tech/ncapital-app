@@ -47,16 +47,29 @@ export function useAutoScore() {
       // Yahoo-Ticker fuer europaeische Aktien anpassen
       // Flatex/Xetra: SAP → SAP.DE, etc.
       let yahooSymbol = symbol.toUpperCase();
-      if (currency === "EUR" && !yahooSymbol.includes(".")) {
-        // Versuche zuerst mit .DE (Xetra)
+      const addedDE = currency === "EUR" && !yahooSymbol.includes(".");
+      if (addedDE) {
         yahooSymbol = `${yahooSymbol}.DE`;
       }
 
-      // Parallel laden: Symbol-Daten + Index-Daten
-      const [symbolResult, indexResult] = await Promise.all([
-        fetchOHLCV(yahooSymbol, "1y", "1d"),
-        fetchIndexData(currency),
-      ]);
+      // Index-Daten immer parallel starten
+      const indexPromise = fetchIndexData(currency);
+
+      // Symbol-Daten laden — bei EUR mit .DE Fallback auf reines Symbol
+      let symbolResult;
+      try {
+        symbolResult = await fetchOHLCV(yahooSymbol, "1y", "1d");
+      } catch (deError) {
+        if (addedDE) {
+          // .DE fehlgeschlagen → US-Symbol ohne Suffix versuchen
+          yahooSymbol = symbol.toUpperCase();
+          symbolResult = await fetchOHLCV(yahooSymbol, "1y", "1d");
+        } else {
+          throw deError;
+        }
+      }
+
+      const indexResult = await indexPromise;
 
       const { candles } = symbolResult;
       const indexCandles = indexResult.candles;

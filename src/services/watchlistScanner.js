@@ -191,14 +191,30 @@ export function computeIntradayScore(intradayCandles, dailyCandles) {
 
 export async function scanSymbol(symbol, currency = "USD") {
   let yahooSymbol = symbol.toUpperCase();
-  if (currency === "EUR" && !yahooSymbol.includes(".")) {
+  const addedDE = currency === "EUR" && !yahooSymbol.includes(".");
+  if (addedDE) {
     yahooSymbol = `${yahooSymbol}.DE`;
   }
 
-  const [dailyResult, intradayResult] = await Promise.all([
-    fetchOHLCV(yahooSymbol, "1y", "1d").catch(() => null),
-    fetchOHLCV(yahooSymbol, "5d", "15m").catch(() => null),
-  ]);
+  let dailyResult, intradayResult;
+  try {
+    [dailyResult, intradayResult] = await Promise.all([
+      fetchOHLCV(yahooSymbol, "1y", "1d"),
+      fetchOHLCV(yahooSymbol, "5d", "15m"),
+    ]);
+  } catch {
+    if (addedDE) {
+      // .DE fehlgeschlagen → US-Symbol ohne Suffix versuchen
+      yahooSymbol = symbol.toUpperCase();
+      [dailyResult, intradayResult] = await Promise.all([
+        fetchOHLCV(yahooSymbol, "1y", "1d").catch(() => null),
+        fetchOHLCV(yahooSymbol, "5d", "15m").catch(() => null),
+      ]);
+    } else {
+      dailyResult = null;
+      intradayResult = null;
+    }
+  }
 
   const dailyCandles = dailyResult?.candles || [];
   const intradayCandles = intradayResult?.candles || [];
