@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper, LogOut, Settings as SettingsIcon, Lock, User } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper, LogOut, Settings as SettingsIcon, Lock, User, Edit3, Trash2, Save } from "lucide-react";
 import Watchlist from "./components/Watchlist";
 import Briefing from "./components/Briefing";
 import LoginPage from "./components/LoginPage";
@@ -924,6 +924,21 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.accentLight, marginLeft: "auto" }}>1 $ = {wechselkurs.toFixed(4)} €</span>
                 </div>
               )}
+              {isUsd && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+                  {[
+                    { label: "Einstieg", usd: `$${fmt(einstieg)}`, eur: `€${fmt(einstieg * wechselkurs)}` },
+                    { label: "Stop-Loss", usd: `$${fmt(sl)}`, eur: `€${fmt(sl * wechselkurs)}`, color: C.red },
+                    { label: "Ziel", usd: `$${fmt(ziel)}`, eur: `€${fmt(ziel * wechselkurs)}`, color: C.green },
+                  ].map((item, i) => (
+                    <div key={i} style={{ textAlign: "center", padding: "10px 8px", borderRadius: 10, background: `${(item.color || C.accent)}08`, border: `1px solid ${(item.color || C.accent)}20` }}>
+                      <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 3, textTransform: "uppercase", fontWeight: 600 }}>{item.label}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: item.color || C.text }}>{item.usd}</div>
+                      <div style={{ fontSize: 12, color: C.accent, fontWeight: 500, marginTop: 2 }}>{item.eur}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 10 }}>
                 {[
                   { label: "CRV", value: fmt(crv, 1) + "x", color: crv >= 2 ? C.green : crv >= 1.5 ? C.orange : C.red },
@@ -1338,14 +1353,15 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
                   { label: "Setup", value: detectedSetup[0]?.name },
                   { label: "Ampel", value: ampel, color: scoreColor },
                   { label: "CRV", value: fmt(crv, 1) + "x" },
-                  { label: "Einstieg", value: `${currencySymbol}${fmt(einstieg)}` },
-                  { label: "Stop-Loss", value: `${currencySymbol}${fmt(sl)}` },
-                  { label: "Ziel", value: `${currencySymbol}${fmt(ziel)}` },
+                  { label: "Einstieg", value: `${currencySymbol}${fmt(einstieg)}`, eur: isUsd ? `≈ ${fmt(einstieg * wechselkurs)} €` : null },
+                  { label: "Stop-Loss", value: `${currencySymbol}${fmt(sl)}`, eur: isUsd ? `≈ ${fmt(sl * wechselkurs)} €` : null },
+                  { label: "Ziel", value: `${currencySymbol}${fmt(ziel)}`, eur: isUsd ? `≈ ${fmt(ziel * wechselkurs)} €` : null },
                   { label: "Score", value: `${totalScore}/${maxScore}` },
                 ].map((item, i) => (
                   <div key={i} style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(10,13,17,0.4)", border: `1px solid ${C.border}` }}>
                     <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", fontWeight: 600, marginBottom: 2 }}>{item.label}</div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: item.color || C.text }}>{item.value}</div>
+                    {item.eur && <div style={{ fontSize: 10, color: C.accent, fontWeight: 500, marginTop: 1 }}>{item.eur}</div>}
                   </div>
                 ))}
               </div>
@@ -1545,11 +1561,14 @@ const Dashboard = ({ portfolio }) => {
 // ════════════════════════════════════════════════════════════════
 // ─── TRADE LOG ───
 // ════════════════════════════════════════════════════════════════
-const TradeLog = ({ tradeList, onUpdateTrade }) => {
+const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
   const [filter, setFilter] = useState("Alle");
   const [expandedId, setExpandedId] = useState(null);
   const [txModal, setTxModal] = useState(null); // { tradeId, type: "sell"|"buy" }
   const [txInputs, setTxInputs] = useState({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] });
+  const [editModal, setEditModal] = useState(null); // trade object being edited
+  const [editInputs, setEditInputs] = useState({});
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // tradeId awaiting delete confirmation
   const ww = useWindowWidth();
   const isMobile = ww < 600;
 
@@ -1584,6 +1603,38 @@ const TradeLog = ({ tradeList, onUpdateTrade }) => {
     }));
     setTxModal(null);
     setTxInputs({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] });
+  };
+
+  const openEdit = (trade) => {
+    setEditModal(trade);
+    setEditInputs({
+      symbol: trade.symbol,
+      stopLoss: String(trade.stopLoss),
+      ziel: String(trade.ziel),
+      waehrung: trade.waehrung || "EUR",
+      wechselkurs: trade.wechselkurs ? String(trade.wechselkurs) : "",
+    });
+  };
+
+  const handleEditSave = () => {
+    if (!editModal) return;
+    const sl = parseFloat(editInputs.stopLoss);
+    const z = parseFloat(editInputs.ziel);
+    if (!editInputs.symbol.trim() || !sl || sl <= 0 || !z || z <= 0) return;
+    onUpdateTrade(editModal.id, (t) => ({
+      ...t,
+      symbol: editInputs.symbol.toUpperCase().trim(),
+      stopLoss: sl,
+      ziel: z,
+      waehrung: editInputs.waehrung,
+      ...(editInputs.waehrung === "USD" && editInputs.wechselkurs ? { wechselkurs: parseFloat(editInputs.wechselkurs) } : {}),
+    }));
+    setEditModal(null);
+  };
+
+  const handleDelete = (id) => {
+    onDeleteTrade(id);
+    setDeleteConfirm(null);
   };
 
   return (
@@ -1628,6 +1679,80 @@ const TradeLog = ({ tradeList, onUpdateTrade }) => {
               {txModal.type === "sell" ? "Teilverkauf buchen" : "Nachkauf buchen"}
             </button>
             <button onClick={() => setTxModal(null)} style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Abbrechen
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Edit-Modal */}
+      {editModal && (
+        <GlassCard style={{ marginBottom: 20, border: `2px solid ${C.accent}40` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <Edit3 size={18} color={C.accent} />
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Trade bearbeiten — {editModal.symbol}</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Symbol</label>
+              <input type="text" value={editInputs.symbol} onChange={e => setEditInputs(p => ({ ...p, symbol: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Stop-Loss</label>
+              <input type="number" value={editInputs.stopLoss} onChange={e => setEditInputs(p => ({ ...p, stopLoss: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Zielkurs</label>
+              <input type="number" value={editInputs.ziel} onChange={e => setEditInputs(p => ({ ...p, ziel: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Waehrung</label>
+              <div style={{ display: "flex", gap: 0, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+                {["EUR", "USD"].map(w => (
+                  <button key={w} onClick={() => setEditInputs(p => ({ ...p, waehrung: w }))} style={{
+                    flex: 1, padding: "10px 0", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
+                    background: editInputs.waehrung === w ? `${C.accent}20` : "rgba(10,13,17,0.6)",
+                    color: editInputs.waehrung === w ? C.accentLight : C.textDim,
+                    borderRight: w === "EUR" ? `1px solid ${C.border}` : "none",
+                  }}>{w}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {editInputs.waehrung === "USD" && (
+            <div style={{ marginTop: 12 }}>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Wechselkurs (1$ = x€)</label>
+              <input type="number" value={editInputs.wechselkurs} onChange={e => setEditInputs(p => ({ ...p, wechselkurs: e.target.value }))} placeholder="0.93"
+                style={{ width: isMobile ? "100%" : "25%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={handleEditSave} style={{ flex: 1, padding: "10px 20px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Save size={15} /> Speichern
+            </button>
+            <button onClick={() => setEditModal(null)} style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Abbrechen
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Delete-Bestätigung */}
+      {deleteConfirm && (
+        <GlassCard style={{ marginBottom: 20, border: `2px solid ${C.red}40`, textAlign: "center", padding: "20px" }}>
+          <Trash2 size={28} color={C.red} style={{ marginBottom: 10 }} />
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>Trade loeschen?</div>
+          <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 16 }}>
+            {tradeList.find(t => t.id === deleteConfirm)?.symbol} — diese Aktion kann nicht rueckgaengig gemacht werden.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+            <button onClick={() => handleDelete(deleteConfirm)} style={{ padding: "10px 24px", borderRadius: 10, border: "none", background: C.red, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <Trash2 size={14} /> Loeschen
+            </button>
+            <button onClick={() => setDeleteConfirm(null)} style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
               Abbrechen
             </button>
           </div>
@@ -1679,15 +1804,23 @@ const TradeLog = ({ tradeList, onUpdateTrade }) => {
                         <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 36, height: 24, borderRadius: 6, fontSize: 12, fontWeight: 700, color: ampelColor(t.ampel), background: ampelBg(t.ampel), border: `1px solid ${ampelBorder(t.ampel)}` }}>{t.score}</div>
                       </td>
                       <td style={{ padding: "10px 12px" }} onClick={e => e.stopPropagation()}>
-                        {t.remaining > 0 && (
-                          <div style={{ display: "flex", gap: 4 }}>
-                            <button onClick={() => { setTxModal({ tradeId: t.id, type: "sell" }); setTxInputs({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] }); }} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.red}20`, color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Teilverkauf</button>
-                            <button onClick={() => { setTxModal({ tradeId: t.id, type: "buy" }); setTxInputs({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] }); }} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.green}20`, color: C.green, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Nachkauf</button>
-                          </div>
-                        )}
-                        {t.remaining === 0 && (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, color: C.textDim, background: "rgba(10,13,17,0.4)" }}>Geschlossen</span>
-                        )}
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {t.remaining > 0 && (
+                            <>
+                              <button onClick={() => { setTxModal({ tradeId: t.id, type: "sell" }); setTxInputs({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] }); }} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.red}20`, color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Teilverkauf</button>
+                              <button onClick={() => { setTxModal({ tradeId: t.id, type: "buy" }); setTxInputs({ stueckzahl: "", kurs: "", datum: new Date().toISOString().split("T")[0] }); }} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.green}20`, color: C.green, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Nachkauf</button>
+                            </>
+                          )}
+                          {t.remaining === 0 && (
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, color: C.textDim, background: "rgba(10,13,17,0.4)" }}>Geschl.</span>
+                          )}
+                          <button onClick={() => openEdit(t)} title="Bearbeiten" style={{ padding: "4px 6px", borderRadius: 6, border: "none", background: `${C.accent}15`, color: C.accentLight, cursor: "pointer", display: "flex", alignItems: "center" }}>
+                            <Edit3 size={13} />
+                          </button>
+                          <button onClick={() => setDeleteConfirm(t.id)} title="Loeschen" style={{ padding: "4px 6px", borderRadius: 6, border: "none", background: `${C.red}10`, color: C.red, cursor: "pointer", display: "flex", alignItems: "center", opacity: 0.6 }}>
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                     {/* Expanded Transaction Sub-Rows */}
@@ -1899,6 +2032,10 @@ export default function TradingJournal() {
     setTradeList(prev => prev.map(t => t.id === id ? updaterFn(t) : t));
   }, []);
 
+  const deleteTrade = useCallback((id) => {
+    setTradeList(prev => prev.filter(t => t.id !== id));
+  }, []);
+
   const navigate = useCallback((p) => {
     setPage(p);
     setMenuOpen(false);
@@ -1921,7 +2058,7 @@ export default function TradingJournal() {
     switch (page) {
       case "briefing": return <Briefing onNavigate={navigate} />;
       case "check": return <TradeCheck portfolio={portfolio} tradeList={tradeList} onAddTrade={addTrade} onUpdateTrade={updateTrade} onNavigate={navigate} />;
-      case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} />;
+      case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} onDeleteTrade={deleteTrade} />;
       case "dashboard": return <Dashboard portfolio={portfolio} />;
       case "watchlist": return <Watchlist onNavigate={navigate} />;
       case "settings": return <SettingsPage />;
