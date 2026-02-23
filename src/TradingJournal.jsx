@@ -1678,6 +1678,27 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
     setEditModal(null);
   };
 
+  // Beim Währungswechsel alle Werte automatisch umrechnen
+  const switchEditCurrency = (newCurrency) => {
+    setEditInputs(p => {
+      if (p.waehrung === newCurrency) return p;
+      const fx = parseFloat(p.wechselkurs) || 0.93;
+      const toEur = newCurrency === "EUR";
+      const conv = (val) => {
+        const n = parseFloat(val);
+        if (!n || n <= 0) return val;
+        return String(Math.round((toEur ? n * fx : n / fx) * 100) / 100);
+      };
+      return {
+        ...p,
+        waehrung: newCurrency,
+        stopLoss: conv(p.stopLoss),
+        ziel: conv(p.ziel),
+        transactions: (p.transactions || []).map(tx => ({ ...tx, kurs: conv(tx.kurs) })),
+      };
+    });
+  };
+
   const updateEditTx = (idx, field, value) => {
     setEditInputs(p => {
       const txs = [...(p.transactions || [])];
@@ -1783,7 +1804,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
               <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Waehrung</label>
               <div style={{ display: "flex", gap: 0, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
                 {["EUR", "USD"].map(w => (
-                  <button key={w} onClick={() => setEditInputs(p => ({ ...p, waehrung: w }))} style={{
+                  <button key={w} onClick={() => switchEditCurrency(w)} style={{
                     flex: 1, padding: "10px 0", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
                     background: editInputs.waehrung === w ? `${C.accent}20` : "rgba(10,13,17,0.6)",
                     color: editInputs.waehrung === w ? C.accentLight : C.textDim,
