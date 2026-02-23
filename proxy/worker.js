@@ -604,14 +604,15 @@ const SETUP_TYPES = {
     key: "trend_follow", label: "Trend Follow", emoji: "\ud83d\ude80",
     subtitle: "Der Momentum-Ritt",
     desc: "Kauf relativer Staerke. Kein Ruecksetzer abwarten, auf den fahrenden Zug aufspringen. Hoher RSI = Staerke, nicht ueberkauft. Outperformance kritisch.",
-    qualify: (i) => i.adxVal >= 20 && (i.isBullishEMA || i.isPartialBullish) && i.rsi > 50 && i.fibLevel <= 0.35,
+    qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi > 50 && i.fibLevel <= 0.35 && i.priceAboveEma20 &&
+      (i.adxVal >= 20 || (i.macdAboveZero && i.perf20d > 0 && i.perf5d > 0)),
     weights: { Trend: 0.25, Momentum: 0.20, "Rel.Staerke": 0.15, Volumen: 0.15, Support: 0.10, Volatilitaet: 0.10, Pullback: 0.05 },
   },
   PULLBACK: {
     key: "pullback", label: "Pullback", emoji: "\ud83c\udfaf",
     subtitle: "Der Ruecksetzer im Trend",
     desc: "Klassisches Dip-Buying. Trend aufwaerts intakt, Aktie macht Atempause. A-Grade = Konfluenz aus RSI + Fib + EMA.",
-    qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi >= 30 && i.rsi <= 55 && i.fibLevel >= 0.15 && i.fibLevel <= 0.60,
+    qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi >= 30 && i.rsi <= 58 && i.fibLevel >= 0.15 && i.fibLevel <= 0.60 && (i.priceAboveEma20 || i.distToEma20 < 3),
     weights: { Pullback: 0.25, Support: 0.20, Trend: 0.15, Volumen: 0.15, Momentum: 0.10, "Rel.Staerke": 0.10, Volatilitaet: 0.05 },
   },
   MEAN_REVERSION: {
@@ -625,7 +626,7 @@ const SETUP_TYPES = {
     key: "breakout", label: "Breakout", emoji: "\u26a1",
     subtitle: "Die Explosion",
     desc: "Wie eine Feder zusammengedrueckt (BB Squeeze). Ausbruch NUR mit Vol-Surge gueltig. Ohne Volumen = Fakeout.",
-    qualify: (i) => i.bbSqueeze === true && i.rsi >= 40 && i.rsi <= 70,
+    qualify: (i) => i.bbSqueeze === true && i.rsi >= 40 && i.rsi <= 70 && !i.isBearishEMA,
     weights: { Volatilitaet: 0.25, Volumen: 0.25, Momentum: 0.20, Trend: 0.15, "Rel.Staerke": 0.10, Support: 0.05, Pullback: 0.00 },
   },
 };
@@ -664,9 +665,11 @@ function extractIndicators(candles) {
   const atrLast = atrArr.length > 0 ? atrArr[atrArr.length - 1] : currentPrice * 0.02;
 
   // Abgeleitete EMA-Signale
-  const isBullishEMA = e200 ? (e20 > e50 && e50 > e200) : (e20 > e50);
-  const isPartialBullish = e200 ? (e20 > e200 || e50 > e200) : (e20 > e50);
-  const isBearishEMA = e200 ? (e200 > e50 && e50 > e20) : (e50 > e20);
+  // EMA-Alignment mit Mindestspread (0.3%) gegen Noise bei fast gleichen EMAs
+  const emaSpread = e50 > 0 ? (e20 - e50) / e50 : 0;
+  const isBullishEMA = e200 ? (e20 > e50 && e50 > e200) : (emaSpread > 0.003);
+  const isPartialBullish = e200 ? (e20 > e200 || e50 > e200) : (emaSpread > 0.001);
+  const isBearishEMA = e200 ? (e200 > e50 && e50 > e20) : (emaSpread < -0.003);
   const isTrending = adxVal >= 20;
   const isStrongTrend = adxVal >= 25;
   const distToEma20 = Math.abs(currentPrice - e20) / e20 * 100;
@@ -724,8 +727,11 @@ function extractIndicators(candles) {
   const atFib382 = fibLevel >= 0.32 && fibLevel <= 0.45;
   const atFib50 = fibLevel >= 0.45 && fibLevel <= 0.55;
   const atFib618 = fibLevel >= 0.55 && fibLevel <= 0.68;
-  const atFibZone = atFib236 || atFib382 || atFib50 || atFib618;
-  const atDeepFib = atFib382 || atFib50 || atFib618;
+  const atFib786 = fibLevel >= 0.73 && fibLevel <= 0.85;
+  const atFibZone = atFib236 || atFib382 || atFib50 || atFib618 || atFib786;
+  const atDeepFib = atFib382 || atFib50 || atFib618 || atFib786;
+  // priceNearEma: Richtung beachten — nahe EMA von OBEN = Support, von UNTEN ≠ Support
+  const priceNearEmaAbove = (distToEma20 < 2 && priceAboveEma20) || (distToEma50 < 3 && currentPrice > e50);
   const priceNearEma = distToEma20 < 2 || distToEma50 < 3;
 
   // MACD-Signale
@@ -830,7 +836,8 @@ function extractIndicators(candles) {
     e20, e50, e200, isBullishEMA, isPartialBullish, isBearishEMA,
     isTrending, isStrongTrend, hhhl, priceAboveEma20,
     distToEma20, distToEma50, priceNearEma,
-    fibLevel, fibHigh, fibLow, fibRange, fibPrices, atFib236, atFib382, atFib50, atFib618, atFibZone, atDeepFib,
+    fibLevel, fibHigh, fibLow, fibRange, fibPrices, atFib236, atFib382, atFib50, atFib618, atFib786, atFibZone, atDeepFib,
+    priceNearEmaAbove,
     macdBullish, macdCrossing, macdAboveZero, stochBullish, stochOversold, rsiBullDiv,
     stochRSI, macd, atrLast,
     volRatio, lastIsRed, lastIsLong, lastBodySize, avgVol,
@@ -881,7 +888,7 @@ function scoreForSetup(ind, setupKey) {
   // ═══ F2: PULLBACK ═══
   let ps = 20;
   const { rsi, fibLevel, atFibZone, atFib236, atFib382, atFib50, atFib618, priceNearEma } = ind;
-  const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : atFib618 ? "61.8%" : "";
+  const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : atFib618 ? "61.8%" : ind.atFib786 ? "78.6%" : "";
 
   if (S === "TREND_FOLLOW") {
     // Momentum-Ritt: Hoher RSI = Staerke, nicht ueberkauft. Nahe am Hoch = ideal.
@@ -893,26 +900,30 @@ function scoreForSetup(ind, setupKey) {
     // Nahe am Hoch (Fib < 10%) = fahrender Zug, Bonus
     if (fibLevel >= 0 && fibLevel < 0.10) { ps = Math.min(100, ps + 10); if (rsi >= 55) signals.push("Nahe am Hoch (Fib <10%)"); }
   } else if (S === "PULLBACK") {
-    // RSI 35-55 ideal, Fib-Zone + EMA-Naehe = Bonus
-    if (rsi >= 35 && rsi <= 55 && atFibZone && priceNearEma) { ps = 100; signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`); }
-    else if (rsi >= 35 && rsi <= 55 && priceNearEma) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} Pullback nahe EMA`); }
+    // Der Ruecksetzer im Trend: RSI 35-58 ideal, Fib-Zone + EMA-Naehe VON OBEN = A-Grade
+    const nearEmaOben = ind.priceNearEmaAbove; // nahe EMA von oben = Support hielt
+    if (rsi >= 35 && rsi <= 55 && atFibZone && nearEmaOben) { ps = 100; signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`); }
+    else if (rsi >= 35 && rsi <= 55 && nearEmaOben) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} Pullback nahe EMA`); }
     else if (rsi >= 35 && rsi <= 55 && atFibZone) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} Pullback Fib ${fibName}`); }
     else if (rsi >= 35 && rsi <= 55) { ps = 70; signals.push(`RSI ${rsi.toFixed(0)} Pullback-Zone`); }
-    else if (rsi >= 55 && rsi <= 65) ps = 45;
+    else if (rsi > 55 && rsi <= 58 && atFibZone) { ps = 65; signals.push(`RSI ${rsi.toFixed(0)} leichter Pullback + Fib`); }
+    else if (rsi > 55 && rsi <= 65) ps = 45;
     else if (rsi < 35) { ps = 60; signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`); }
     else if (rsi > 70) ps = 10;
     else ps = 30;
   } else if (S === "MEAN_REVERSION") {
     // Die Uebertreibung / Gummiband: Tiefer RSI + weit vom EMA = Snap-Back-Potential
-    const deepFib = atFib50 || atFib618 || (fibLevel >= 0.68);
+    const deepFib = atFib50 || atFib618 || ind.atFib786 || (fibLevel >= 0.68);
     const distEma = ind.distToEma20; // Distanz zum EMA 20 in %
-    if (rsi < 30 && deepFib) { ps = 100; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibName || ">68%"} Reversal`); }
+    const fibTag = fibName || (fibLevel >= 0.73 ? "78.6%" : fibLevel >= 0.68 ? ">68%" : "");
+    if (rsi < 30 && deepFib) { ps = 100; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag} Reversal`); }
     else if (rsi < 30) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} stark ueberverkauft`); }
-    else if (rsi < 35 && deepFib) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibName}`); }
+    else if (rsi < 35 && deepFib) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag}`); }
     else if (rsi < 35) { ps = 75; signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`); }
-    else if (rsi < 40 && atFibZone) ps = 60;
+    else if (rsi < 40 && (atFibZone || deepFib)) { ps = 65; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag || (fibLevel * 100).toFixed(0) + "%"}`); }
     else if (rsi < 40) ps = 50;
-    else ps = 15; // RSI > 40 = kein Mean Reversion Setup
+    else if (rsi < 45 && deepFib && distEma > 5) { ps = 40; signals.push(`RSI ${rsi.toFixed(0)} + ${distEma.toFixed(1)}% unter EMA`); }
+    else ps = 15; // RSI > 45 oder kein Deep Fib = schwaches MR Signal
     // Gummiband: Je weiter unter EMA 20, desto mehr Snap-Back-Potential
     if (distEma > 10 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 10); signals.push(`${distEma.toFixed(1)}% unter EMA 20 (Gummiband)`); }
     else if (distEma > 5 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 5); }
@@ -945,7 +956,7 @@ function scoreForSetup(ind, setupKey) {
   if (fibLevel >= 0) {
     const fibPct = (fibLevel * 100).toFixed(0);
     // Naechstes Fib-Level bestimmen
-    const nearestFib = ind.atFib236 ? "23.6%" : ind.atFib382 ? "38.2%" : ind.atFib50 ? "50%" : ind.atFib618 ? "61.8%" : "";
+    const nearestFib = ind.atFib236 ? "23.6%" : ind.atFib382 ? "38.2%" : ind.atFib50 ? "50%" : ind.atFib618 ? "61.8%" : ind.atFib786 ? "78.6%" : "";
     const fibPrice = nearestFib && ind.fibPrices[nearestFib] ? ind.fibPrices[nearestFib] : null;
     fibInfo = nearestFib && fibPrice
       ? `${fibPct}% (${nearestFib} @ ${fibPrice >= 100 ? fibPrice.toFixed(0) : fibPrice.toFixed(2)})`
