@@ -1641,6 +1641,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
       ziel: wasUsd ? String(Math.round(trade.ziel / fx * 100) / 100) : String(trade.ziel),
       waehrung: wasUsd ? "USD" : (trade.originalWaehrung || trade.waehrung || "EUR"),
       wechselkurs: fx ? String(fx) : "",
+      transactions: (trade.transactions || []).map(tx => ({ ...tx, kurs: String(tx.kurs), stueck: String(tx.stueck) })),
     });
   };
 
@@ -1651,6 +1652,10 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
     if (!editInputs.symbol.trim() || !sl || sl <= 0 || !z || z <= 0) return;
     const editIsUsd = editInputs.waehrung === "USD";
     const editFx = parseFloat(editInputs.wechselkurs) || 0.93;
+    // Transaktionen validieren und parsen
+    const cleanTx = (editInputs.transactions || [])
+      .filter(tx => parseFloat(tx.kurs) > 0 && parseInt(tx.stueck) > 0 && tx.datum)
+      .map(tx => ({ type: tx.type, datum: tx.datum, kurs: parseFloat(tx.kurs), stueck: parseInt(tx.stueck) }));
     // Immer in EUR speichern
     onUpdateTrade(editModal.id, (t) => ({
       ...t,
@@ -1658,9 +1663,29 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
       stopLoss: editIsUsd ? Math.round(sl * editFx * 100) / 100 : sl,
       ziel: editIsUsd ? Math.round(z * editFx * 100) / 100 : z,
       waehrung: "EUR",
+      ...(cleanTx.length > 0 ? { transactions: cleanTx } : {}),
       ...(editIsUsd ? { originalWaehrung: "USD", usdWechselkurs: editFx } : { originalWaehrung: undefined, usdWechselkurs: undefined }),
     }));
     setEditModal(null);
+  };
+
+  const updateEditTx = (idx, field, value) => {
+    setEditInputs(p => {
+      const txs = [...(p.transactions || [])];
+      txs[idx] = { ...txs[idx], [field]: value };
+      return { ...p, transactions: txs };
+    });
+  };
+
+  const removeEditTx = (idx) => {
+    setEditInputs(p => ({ ...p, transactions: (p.transactions || []).filter((_, i) => i !== idx) }));
+  };
+
+  const addEditTx = (type) => {
+    setEditInputs(p => ({
+      ...p,
+      transactions: [...(p.transactions || []), { type, datum: new Date().toISOString().split("T")[0], stueck: "", kurs: "" }],
+    }));
   };
 
   const handleDelete = (id) => {
@@ -1774,6 +1799,41 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
               </div>
             </div>
           )}
+          {/* Transaktionen bearbeiten */}
+          <div style={{ marginTop: 16, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 10 }}>Transaktionen</div>
+            {(editInputs.transactions || []).map((tx, idx) => (
+              <div key={idx} style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "70px 1fr 1fr 1fr 36px", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: tx.type === "buy" ? C.green : C.red, textTransform: "uppercase" }}>
+                  {tx.type === "buy" ? "Kauf" : "Verkauf"}
+                </div>
+                <div>
+                  <input type="date" value={tx.datum || ""} onChange={e => updateEditTx(idx, "datum", e.target.value)}
+                    style={{ width: "100%", padding: "8px 10px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box", colorScheme: "dark" }} />
+                </div>
+                <div>
+                  <input type="number" value={tx.stueck} onChange={e => updateEditTx(idx, "stueck", e.target.value)} placeholder="St."
+                    style={{ width: "100%", padding: "8px 10px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <input type="number" step="0.01" value={tx.kurs} onChange={e => updateEditTx(idx, "kurs", e.target.value)} placeholder="Kurs"
+                    style={{ width: "100%", padding: "8px 10px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <button onClick={() => removeEditTx(idx)} title="Entfernen"
+                  style={{ padding: "6px", borderRadius: 6, border: "none", background: `${C.red}15`, color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, lineHeight: 1 }}>
+                  ×
+                </button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button onClick={() => addEditTx("buy")} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.green}40`, background: `${C.green}10`, color: C.green, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                + Kauf
+              </button>
+              <button onClick={() => addEditTx("sell")} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.red}40`, background: `${C.red}10`, color: C.red, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                + Verkauf
+              </button>
+            </div>
+          </div>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <button onClick={handleEditSave} style={{ flex: 1, padding: "10px 20px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
               <Save size={15} /> Speichern
