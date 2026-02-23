@@ -602,27 +602,37 @@ function calcOBV(candles) {
 const SETUP_TYPES = {
   TREND_FOLLOW: {
     key: "trend_follow", label: "Trend Follow", emoji: "\ud83d\ude80",
+    subtitle: "Der Momentum-Ritt",
+    desc: "Kauf relativer Staerke. Kein Ruecksetzer abwarten, auf den fahrenden Zug aufspringen. Hoher RSI = Staerke, nicht ueberkauft. Outperformance kritisch.",
     qualify: (i) => i.adxVal >= 20 && (i.isBullishEMA || i.isPartialBullish) && i.rsi > 50 && i.fibLevel <= 0.35,
     weights: { Trend: 0.25, Momentum: 0.20, "Rel.Staerke": 0.15, Volumen: 0.15, Support: 0.10, Volatilitaet: 0.10, Pullback: 0.05 },
   },
   PULLBACK: {
     key: "pullback", label: "Pullback", emoji: "\ud83c\udfaf",
+    subtitle: "Der Ruecksetzer im Trend",
+    desc: "Klassisches Dip-Buying. Trend aufwaerts intakt, Aktie macht Atempause. A-Grade = Konfluenz aus RSI + Fib + EMA.",
     qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi >= 30 && i.rsi <= 55 && i.fibLevel >= 0.15 && i.fibLevel <= 0.60,
     weights: { Pullback: 0.25, Support: 0.20, Trend: 0.15, Volumen: 0.15, Momentum: 0.10, "Rel.Staerke": 0.10, Volatilitaet: 0.05 },
   },
   MEAN_REVERSION: {
     key: "mean_reversion", label: "Mean Reversion", emoji: "\ud83d\udd04",
+    subtitle: "Die Uebertreibung",
+    desc: "Antizyklisch: Preis zu weit vom Mittelwert abgewichen (Gummiband). Snap-Back zum EMA 20. Bearishe Phasen = beste Chancen.",
     qualify: (i) => i.rsi < 35 || (i.bbRelPos !== null && i.bbRelPos < 0.15) || i.fibLevel >= 0.55,
     weights: { Momentum: 0.25, Pullback: 0.20, Volumen: 0.15, Volatilitaet: 0.15, Support: 0.10, Trend: 0.10, "Rel.Staerke": 0.05 },
   },
   BREAKOUT: {
     key: "breakout", label: "Breakout", emoji: "\u26a1",
+    subtitle: "Die Explosion",
+    desc: "Wie eine Feder zusammengedrueckt (BB Squeeze). Ausbruch NUR mit Vol-Surge gueltig. Ohne Volumen = Fakeout.",
     qualify: (i) => i.bbSqueeze === true && i.rsi >= 40 && i.rsi <= 70,
     weights: { Volatilitaet: 0.25, Volumen: 0.25, Momentum: 0.20, Trend: 0.15, "Rel.Staerke": 0.10, Support: 0.05, Pullback: 0.00 },
   },
 };
 const SETUP_GENERAL = {
   key: "general", label: "General", emoji: "\ud83d\udcca",
+  subtitle: "Kein klares Setup",
+  desc: "Kein Setup qualifiziert. Gleichmaessig gewichtete Bewertung aller Faktoren.",
   weights: { Trend: 0.20, Pullback: 0.15, Momentum: 0.20, Volumen: 0.15, "Rel.Staerke": 0.10, Volatilitaet: 0.10, Support: 0.10 },
 };
 
@@ -677,8 +687,10 @@ function extractIndicators(candles) {
     hhhl = swingHighs[swingHighs.length - 1] > swingHighs[swingHighs.length - 2] && swingLows[swingLows.length - 1] > swingLows[swingLows.length - 2];
   }
 
-  // Fibonacci
+  // Fibonacci — Level + konkrete Preise
   let fibLevel = -1;
+  let fibHigh = 0, fibLow = 0, fibRange = 0;
+  let fibPrices = {}; // Fib-Level mit konkreten Preisen
   if (candles.length >= 30) {
     const fbLb = Math.min(candles.length, 200);
     const fbC = candles.slice(-fbLb);
@@ -690,9 +702,23 @@ function extractIndicators(candles) {
       if (swHighIdx >= 10) trendLow = Math.min(...fbC.slice(0, swHighIdx).map(c => c.low));
       else trendLow = swHigh;
     }
-    const range = swHigh - trendLow;
-    if (range > 0 && swHigh > currentPrice) fibLevel = (swHigh - currentPrice) / range;
+    fibHigh = swHigh;
+    fibLow = trendLow;
+    fibRange = swHigh - trendLow;
+    if (fibRange > 0 && swHigh > currentPrice) fibLevel = (swHigh - currentPrice) / fibRange;
     else if (currentPrice >= swHigh) fibLevel = 0;
+    // Konkrete Preise pro Fib-Level
+    if (fibRange > 0) {
+      fibPrices = {
+        "0%": swHigh,
+        "23.6%": Math.round((swHigh - fibRange * 0.236) * 100) / 100,
+        "38.2%": Math.round((swHigh - fibRange * 0.382) * 100) / 100,
+        "50%": Math.round((swHigh - fibRange * 0.500) * 100) / 100,
+        "61.8%": Math.round((swHigh - fibRange * 0.618) * 100) / 100,
+        "78.6%": Math.round((swHigh - fibRange * 0.786) * 100) / 100,
+        "100%": trendLow,
+      };
+    }
   }
   const atFib236 = fibLevel >= 0.18 && fibLevel <= 0.30;
   const atFib382 = fibLevel >= 0.32 && fibLevel <= 0.45;
@@ -804,7 +830,7 @@ function extractIndicators(candles) {
     e20, e50, e200, isBullishEMA, isPartialBullish, isBearishEMA,
     isTrending, isStrongTrend, hhhl, priceAboveEma20,
     distToEma20, distToEma50, priceNearEma,
-    fibLevel, atFib236, atFib382, atFib50, atFib618, atFibZone, atDeepFib,
+    fibLevel, fibHigh, fibLow, fibRange, fibPrices, atFib236, atFib382, atFib50, atFib618, atFibZone, atDeepFib,
     macdBullish, macdCrossing, macdAboveZero, stochBullish, stochOversold, rsiBullDiv,
     stochRSI, macd, atrLast,
     volRatio, lastIsRed, lastIsLong, lastBodySize, avgVol,
@@ -858,12 +884,14 @@ function scoreForSetup(ind, setupKey) {
   const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : atFib618 ? "61.8%" : "";
 
   if (S === "TREND_FOLLOW") {
-    // Hoher RSI = bullisch (Trend laeuft), tiefer RSI = schlecht
+    // Momentum-Ritt: Hoher RSI = Staerke, nicht ueberkauft. Nahe am Hoch = ideal.
     if (rsi >= 55 && rsi <= 70) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} Trend-Momentum`); }
     else if (rsi >= 50 && rsi < 55) ps = 70;
     else if (rsi > 70) { ps = 50; } // Ueberkauft, aber Trend = ok
     else if (rsi >= 40 && rsi < 50) ps = 30;
     else ps = 10; // RSI < 40 = Trend gebrochen
+    // Nahe am Hoch (Fib < 10%) = fahrender Zug, Bonus
+    if (fibLevel >= 0 && fibLevel < 0.10) { ps = Math.min(100, ps + 10); if (rsi >= 55) signals.push("Nahe am Hoch (Fib <10%)"); }
   } else if (S === "PULLBACK") {
     // RSI 35-55 ideal, Fib-Zone + EMA-Naehe = Bonus
     if (rsi >= 35 && rsi <= 55 && atFibZone && priceNearEma) { ps = 100; signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`); }
@@ -875,8 +903,9 @@ function scoreForSetup(ind, setupKey) {
     else if (rsi > 70) ps = 10;
     else ps = 30;
   } else if (S === "MEAN_REVERSION") {
-    // Tiefer RSI = BULLISCH! Je ueberverkaufter desto besser
+    // Die Uebertreibung / Gummiband: Tiefer RSI + weit vom EMA = Snap-Back-Potential
     const deepFib = atFib50 || atFib618 || (fibLevel >= 0.68);
+    const distEma = ind.distToEma20; // Distanz zum EMA 20 in %
     if (rsi < 30 && deepFib) { ps = 100; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibName || ">68%"} Reversal`); }
     else if (rsi < 30) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} stark ueberverkauft`); }
     else if (rsi < 35 && deepFib) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibName}`); }
@@ -884,6 +913,9 @@ function scoreForSetup(ind, setupKey) {
     else if (rsi < 40 && atFibZone) ps = 60;
     else if (rsi < 40) ps = 50;
     else ps = 15; // RSI > 40 = kein Mean Reversion Setup
+    // Gummiband: Je weiter unter EMA 20, desto mehr Snap-Back-Potential
+    if (distEma > 10 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 10); signals.push(`${distEma.toFixed(1)}% unter EMA 20 (Gummiband)`); }
+    else if (distEma > 5 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 5); }
   } else if (S === "BREAKOUT") {
     // RSI 50-65 ideal (Momentum baut sich auf, nicht ueberverkauft)
     if (rsi >= 50 && rsi <= 65) { ps = 75; }
@@ -908,7 +940,18 @@ function scoreForSetup(ind, setupKey) {
       else ps = 20;
     }
   }
-  factors.push({ name: "Pullback", score: ps, value: `RSI ${rsi.toFixed(0)}, Fib ${fibLevel >= 0 ? (fibLevel * 100).toFixed(0) + "%" : "?"}` });
+  // Fib-Info mit konkretem Preis
+  let fibInfo = "?";
+  if (fibLevel >= 0) {
+    const fibPct = (fibLevel * 100).toFixed(0);
+    // Naechstes Fib-Level bestimmen
+    const nearestFib = ind.atFib236 ? "23.6%" : ind.atFib382 ? "38.2%" : ind.atFib50 ? "50%" : ind.atFib618 ? "61.8%" : "";
+    const fibPrice = nearestFib && ind.fibPrices[nearestFib] ? ind.fibPrices[nearestFib] : null;
+    fibInfo = nearestFib && fibPrice
+      ? `${fibPct}% (${nearestFib} @ ${fibPrice >= 100 ? fibPrice.toFixed(0) : fibPrice.toFixed(2)})`
+      : `${fibPct}%`;
+  }
+  factors.push({ name: "Pullback", score: ps, value: `RSI ${rsi.toFixed(0)}, Fib ${fibInfo}` });
 
   // ═══ F3: MOMENTUM ═══
   let ms = 10;
@@ -965,13 +1008,14 @@ function scoreForSetup(ind, setupKey) {
     else if (!lastIsRed && volRatio >= 1.3) { vs = 90; volLabel = "Reversal-Vol"; signals.push("Gruene Kerze + hohes Vol = Reversal"); }
     else vs = 30;
   } else if (S === "BREAKOUT") {
-    // Volumen-Surge auf gruener Kerze = Breakout-Bestaetigung
+    // Die Explosion: Vol-Surge = Make or Break. Ohne Volumen = Fakeout!
     if (!lastIsRed && volRatio >= 1.8) { vs = 100; volLabel = "Breakout-Vol"; signals.push(`Vol ${volRatio.toFixed(1)}x Breakout`); }
     else if (!lastIsRed && volRatio >= 1.3) { vs = 85; volLabel = "Surge"; signals.push(`Vol ${volRatio.toFixed(1)}x Surge`); }
-    else if (obvRising && !lastIsRed) { vs = 65; volLabel = "OBV+"; }
+    else if (obvRising && !lastIsRed && volRatio >= 1.0) { vs = 60; volLabel = "OBV+"; }
     else if (ind.heavySelling || ind.distributionPattern) { vs = 0; volLabel = "Abbruch"; }
-    else if (lastIsRed) { vs = 15; volLabel = "rot"; }
-    else vs = 35;
+    else if (lastIsRed) { vs = 10; volLabel = "rot"; }
+    else if (!lastIsRed && volRatio < 0.8) { vs = 10; volLabel = "Fakeout"; signals.push(`\u26a0\ufe0f Fakeout-Gefahr: Vol nur ${volRatio.toFixed(1)}x`); }
+    else { vs = 20; volLabel = "schwach"; } // Vol 0.8-1.0 ohne OBV = unsicher
   } else {
     // TREND_FOLLOW, PULLBACK, GENERAL — aehnliche Logik
     if (ind.heavySelling && last3AllRed) { vs = 0; volLabel = "Panikverkauf"; signals.push(`\u26a0\ufe0f Panikverkauf: Vol ${volRatio.toFixed(1)}x, 3x rot`); }
@@ -1153,6 +1197,14 @@ function computeSwingScore(candles) {
   if (results.length > 1) {
     best.signals.push("Setups: " + results.map(r => r.setupEmoji + " " + r.setup + " " + r.total).join(", "));
   }
+
+  // Fib-Preise + Setup-Subtitle mitgeben
+  best.fibPrices = ind.fibPrices || {};
+  best.fibLevel = ind.fibLevel;
+  best.fibHigh = ind.fibHigh;
+  best.fibLow = ind.fibLow;
+  const activeType = Object.values(SETUP_TYPES).find(s => s.key === best.setupKey);
+  best.subtitle = activeType?.subtitle || SETUP_GENERAL.subtitle || "";
 
   return best;
 }
@@ -1701,23 +1753,38 @@ async function sendTelegramScannerAlerts(filtered, env) {
     const target = r.price + risk * 2.5;
     const stopPct = ((stopDist / r.price) * 100).toFixed(1);
     const crv = risk > 0 ? ((target - r.price) / risk).toFixed(1) : "?";
-    // Fib-Level aus Pullback-Faktor extrahieren
-    const pullbackF = (r.swing.factors || []).find(f => f.name === "Pullback");
-    const fibMatch = pullbackF?.value?.match(/Fib (\d+)%/);
-    const fibNum = fibMatch ? parseInt(fibMatch[1]) : -1;
-    const fibName = fibNum >= 18 && fibNum <= 30 ? "23.6%" :
-                    fibNum >= 32 && fibNum <= 45 ? "38.2%" :
-                    fibNum >= 45 && fibNum <= 55 ? "50%" :
-                    fibNum >= 55 && fibNum <= 68 ? "61.8%" :
-                    fibNum >= 72 && fibNum <= 82 ? "78.6%" : "";
-    const fibLabel = fibName ? `Fib ${fibName} (${fibNum}%)` : fibNum >= 0 ? `Fib ${fibNum}%` : "";
+    // Fib-Level + Preise direkt aus swing-Daten
+    const fibLvl = r.swing.fibLevel;
+    const fibP = r.swing.fibPrices || {};
+    const fibNum = fibLvl >= 0 ? Math.round(fibLvl * 100) : -1;
+    const nearestFibKey = fibNum >= 18 && fibNum <= 30 ? "23.6%" :
+                          fibNum >= 32 && fibNum <= 45 ? "38.2%" :
+                          fibNum >= 45 && fibNum <= 55 ? "50%" :
+                          fibNum >= 55 && fibNum <= 68 ? "61.8%" :
+                          fibNum >= 72 && fibNum <= 82 ? "78.6%" : "";
+    let fibLabel = "";
+    if (nearestFibKey && fibP[nearestFibKey]) {
+      fibLabel = `Fib ${nearestFibKey} @ ${fmtP(fibP[nearestFibKey])} ${r.currency} (${fibNum}%)`;
+    } else if (fibNum >= 0) {
+      fibLabel = `Fib ${fibNum}%`;
+    }
+    // Fib-Preistabelle: naechste Levels anzeigen
+    let fibTable = "";
+    if (Object.keys(fibP).length > 0 && fibNum >= 0) {
+      const relevantLevels = ["23.6%", "38.2%", "50%", "61.8%"].filter(k => fibP[k]);
+      if (relevantLevels.length > 0) {
+        fibTable = relevantLevels.map(k => `${k} ${fmtP(fibP[k])}`).join(" \u2502 ");
+      }
+    }
 
     const setupTag = r.swing.setupEmoji ? `${r.swing.setupEmoji} ${r.swing.setup}` : "Swing";
-    let line = `${dot} <b>${esc(r.displaySymbol)}</b>  ${setupTag} ${r.swing.total}  \u2502  ${price} (${chg})\n`;
+    const subtitle = r.swing.subtitle ? ` <i>${esc(r.swing.subtitle)}</i>` : "";
+    let line = `${dot} <b>${esc(r.displaySymbol)}</b>  ${setupTag} ${r.swing.total}  \u2502  ${price} (${chg})${subtitle}\n`;
     line += `   Entry ${fmtP(r.price)}  \u2502  Stop ${fmtP(stop)} (-${stopPct}%)  \u2502  Ziel ${fmtP(target)}\n`;
     line += `   CRV <b>${crv}</b>  \u2502  ATR ${fmtP(atr)}`;
     if (fibLabel) line += `  \u2502  ${fibLabel}`;
     line += "\n";
+    if (fibTable) line += `   Fib: ${fibTable}\n`;
     if (sigs) line += `   ${sigs}`;
     return line;
   });
@@ -1937,8 +2004,10 @@ function generateTradeSetups(scanResults, maxSetups = 5) {
         swingScore: r.swing.total, intradayScore: r.intraday.total,
         combinedScore: r.combinedScore || Math.round(r.swing.total * 0.6 + r.intraday.total * 0.4),
         setup: r.swing.setup, setupKey: r.swing.setupKey, setupEmoji: r.swing.setupEmoji,
+        subtitle: r.swing.subtitle,
         price: entry, change: r.change, atr: Math.round(atr * 100) / 100,
         entry: Math.round(entry * 100) / 100, stop, target, crv, stopPct,
+        fibLevel: r.swing.fibLevel, fibPrices: r.swing.fibPrices,
         signals: r.swing.signals.slice(0, 3), factors: r.swing.factors,
       };
     });
@@ -2291,6 +2360,8 @@ async function generateBriefing(env, type) {
       swingScore: r.swing.total, intradayScore: r.intraday.total,
       combinedScore: r.combinedScore || Math.round(r.swing.total * 0.6 + r.intraday.total * 0.4),
       setup: r.swing.setup, setupKey: r.swing.setupKey, setupEmoji: r.swing.setupEmoji,
+      subtitle: r.swing.subtitle,
+      fibLevel: r.swing.fibLevel, fibPrices: r.swing.fibPrices,
       signals: [...r.swing.signals, ...r.intraday.signals].slice(0, 4),
       factors: r.swing.factors,
     })),
