@@ -1,47 +1,37 @@
 // ─── N-Capital Market Data Proxy + Full Index Scanner (Cloudflare Worker) ───
 // Routes: /api/chart, /api/batch, /api/push/*, /api/scan/*, /api/briefing/*
 // Cron: Chunked scan of S&P 500 + DAX 40 (alle 5 Min ein Chunk, voller Scan ~45 Min)
-// KV-Optimized: consolidated scan:state (1R+1W per invocation instead of 5R+6W)
+// KV-Optimized: accumulator pattern — scan:live holds state+results (1R+1W per invocation)
 // Deployment: cd proxy && npx wrangler deploy
 
 import { buildPushHTTPRequest } from "@pushforge/builder";
 
 // ─── S&P 500 Symbols (~507 Aktien) ───
 
-const SP500_SYMBOLS = [
-  "A","AAPL","ABBV","ABNB","ABT","ACGL","ACN","ADBE","ADI","ADM","ADP","ADSK","AEE","AEP","AES",
-  "AFL","AIG","AIZ","AJG","AKAM","ALB","ALGN","ALL","ALLE","AMAT","AMCR","AMD","AME","AMGN","AMP",
-  "AMT","AMZN","ANET","AON","AOS","APA","APD","APH","APO","APP","APTV","ARE","ARES","ATO","AVB",
-  "AVGO","AVY","AWK","AXON","AXP","AZO","BA","BAC","BALL","BAX","BBWI","BBY","BDX","BEN","BF.B",
-  "BG","BIIB","BK","BKNG","BKR","BLDR","BLK","BMY","BR","BRK.B","BRO","BSX","BX","BXP","C","CAG",
-  "CAH","CARR","CAT","CB","CBOE","CBRE","CCI","CCL","CDNS","CDW","CEG","CF","CFG","CHD","CHRW",
-  "CHTR","CI","CIEN","CINF","CL","CLX","CMCSA","CME","CMG","CMI","CMS","CNC","CNP","COF","COIN",
-  "COO","COP","COR","COST","CPAY","CPB","CPRT","CPT","CRH","CRL","CRM","CRWD","CSCO","CSGP","CSX",
-  "CTAS","CTRA","CTSH","CTVA","CVNA","CVS","CVX","D","DAL","DASH","DD","DDOG","DE","DECK","DELL",
-  "DG","DGX","DHI","DHR","DIS","DLR","DLTR","DOV","DOW","DPZ","DRI","DTE","DUK","DVA","DVN","DXCM",
-  "EA","EBAY","ECL","ED","EFX","EG","EIX","EL","ELV","EME","EMN","EMR","EOG","EPAM","EQIX","EQR",
-  "EQT","ERIE","ES","ESS","ETN","ETR","EVRG","EW","EXC","EXE","EXPD","EXPE","EXR","F","FANG","FAST",
-  "FCX","FDS","FDX","FE","FFIV","FI","FICO","FIS","FISV","FITB","FIX","FLT","FMC","FOX","FOXA","FRT",
-  "FSLR","FTNT","FTV","GD","GDDY","GE","GEHC","GEN","GEV","GILD","GIS","GL","GLW","GM","GNRC","GOOG",
-  "GOOGL","GPC","GPN","GRMN","GS","GWW","HAL","HAS","HBAN","HCA","HD","HIG","HII","HLT","HOLX","HON",
-  "HOOD","HPE","HPQ","HRL","HST","HSY","HUBB","HUM","HWM","IBKR","IBM","ICE","IDXX","IEX","IFF",
-  "INCY","INTC","INTU","INVH","IP","IQV","IR","IRM","ISRG","IT","ITW","IVZ","JBHT","JBL","JCI",
-  "JKHY","JNJ","JPM","K","KDP","KEY","KEYS","KHC","KIM","KKR","KLAC","KMB","KMI","KO","KR","KVUE",
-  "L","LDOS","LEN","LH","LHX","LII","LIN","LLY","LMT","LNT","LOW","LRCX","LULU","LUV","LVS","LW",
-  "LYB","LYV","MA","MAA","MAR","MAS","MCD","MCHP","MCK","MCO","MDLZ","MDT","MET","META","MGM","MKC",
-  "MLM","MMC","MMM","MNST","MO","MOH","MOS","MPC","MPWR","MRK","MRNA","MRSH","MS","MSCI","MSFT",
-  "MSI","MTB","MTCH","MTD","MU","NCLH","NDAQ","NDSN","NEE","NEM","NFLX","NI","NKE","NOC","NOW","NRG",
-  "NSC","NTAP","NTRS","NUE","NVDA","NVR","NWS","NWSA","NXPI","O","ODFL","OKE","OMC","ON","ORCL",
-  "ORLY","OTIS","OXY","PANW","PARA","PAYC","PAYX","PCAR","PCG","PEG","PEP","PFE","PFG","PG","PGR",
-  "PH","PHM","PKG","PLD","PLTR","PM","PNC","PNR","PNW","PODD","POOL","PPG","PPL","PRU","PSA","PSX",
-  "PTC","PWR","PXD","PYPL","Q","QCOM","RCL","REG","REGN","RF","RJF","RL","RMD","ROK","ROL","ROP",
-  "ROST","RSG","RTX","RVTY","SBAC","SBUX","SCHW","SHW","SJM","SLB","SMCI","SNA","SNPS","SO","SOLV",
-  "SPG","SPGI","SRE","STE","STLD","STT","STX","STZ","SW","SWK","SWKS","SYF","SYK","SYY","T","TAP",
-  "TDG","TDY","TECH","TEL","TER","TFC","TGT","TJX","TKO","TMO","TMUS","TPL","TPR","TRGP","TRMB",
-  "TROW","TRV","TSCO","TSLA","TSN","TT","TTD","TTWO","TXN","TXT","TYL","UAL","UBER","UDR","UHS",
-  "ULTA","UNH","UNP","UPS","URI","USB","V","VICI","VLO","VLTO","VMC","VRSK","VRSN","VRTX","VST",
-  "VTR","VTRS","VZ","WAB","WAT","WBD","WDAY","WDC","WEC","WELL","WFC","WM","WMB","WMT","WRB","WRK",
-  "WSM","WST","WTW","WY","WYNN","XEL","XOM","XYL","YUM","ZBH","ZBRA","ZTS",
+// S&P 100 (OEX) — Top 100 US Large Caps by Market Cap
+const SP100_SYMBOLS = [
+  "AAPL","ABBV","ABT","ACN","ADBE","AIG","AMD","AMGN","AMT","AMZN","AVGO","AXP",
+  "BAC","BK","BKNG","BLK","BMY","BRK-B",
+  "C","CAT","CMCSA","COF","COP","COST","CRM","CSCO","CVS","CVX",
+  "DE","DHR","DIS","DUK",
+  "EMR","EXC",
+  "GD","GE","GILD","GM","GOOG","GOOGL","GS",
+  "HD","HON",
+  "IBM","INTC","INTU","ISRG",
+  "JNJ","JPM",
+  "KMI","KO",
+  "LIN","LLY","LMT","LOW",
+  "MA","MCD","MDLZ","MDT","MET","META","MMM","MO","MRK","MS","MSFT",
+  "NEE","NFLX","NKE","NOW","NVDA",
+  "ORCL","OXY",
+  "PEP","PFE","PG","PLTR","PM","PYPL",
+  "QCOM",
+  "RTX",
+  "SBUX","SCHW","SLB","SO","SPG",
+  "T","TGT","TMO","TMUS","TSLA","TXN",
+  "UBER","UNH","UNP","UPS","USB",
+  "V","VZ",
+  "WFC","WMT","XOM",
 ];
 
 // ─── DAX 40 Symbols (Yahoo Finance .DE Suffix) ───
@@ -53,17 +43,18 @@ const DAX40_SYMBOLS = [
   "QIA.DE","RHM.DE","RWE.DE","SAP.DE","SHL.DE","SIE.DE","SRT3.DE","VOW3.DE","ZAL.DE",
 ];
 
-const ALL_INDEX_SYMBOLS = [...SP500_SYMBOLS, ...DAX40_SYMBOLS];
+const ALL_INDEX_SYMBOLS = [...SP100_SYMBOLS, ...DAX40_SYMBOLS];
 
 // ─── Macro Symbols for Market Briefing ───
 
 const MACRO_SYMBOLS = {
   indices:     [{ symbol: "^GSPC", name: "S&P 500" }, { symbol: "^GDAXI", name: "DAX" }, { symbol: "^DJI", name: "Dow Jones" }, { symbol: "^IXIC", name: "Nasdaq" }],
+  asia:        [{ symbol: "^N225", name: "Nikkei 225" }, { symbol: "^HSI", name: "Hang Seng" }, { symbol: "000001.SS", name: "Shanghai Comp." }],
   volatility:  [{ symbol: "^VIX", name: "VIX" }],
   bonds:       [{ symbol: "^TNX", name: "US 10Y Yield" }],
   commodities: [{ symbol: "GC=F", name: "Gold" }, { symbol: "CL=F", name: "WTI Öl" }],
   crypto:      [{ symbol: "BTC-USD", name: "Bitcoin" }],
-  currencies:  [{ symbol: "EURUSD=X", name: "EUR/USD" }],
+  currencies:  [{ symbol: "EURUSD=X", name: "EUR/USD" }, { symbol: "JPY=X", name: "USD/JPY" }],
   futures:     [{ symbol: "ES=F", name: "S&P Futures" }, { symbol: "NQ=F", name: "Nasdaq Futures" }],
 };
 const ALL_MACRO_SYMBOLS = Object.values(MACRO_SYMBOLS).flat().map(m => m.symbol);
@@ -221,7 +212,7 @@ const RECURRING_EVENTS_2026 = [
 
 const SCAN_DEFAULTS = {
   chunkSize: 24,         // Symbols per chunk (24 × 2 calls = 48 fetches, under 50 subrequest limit)
-  parallelBatch: 5,      // Parallel fetches per batch
+  parallelBatch: 6,      // Parallel fetches per batch
   threshold: 75,         // Minimum combined score to show in results
   notifyThreshold: 80,   // Minimum combined score to trigger push notification
 };
@@ -486,12 +477,127 @@ function calcBollingerBands(closes, period = 20, stdDev = 2) {
     let sqSum = 0;
     for (let j = i - period + 1; j <= i; j++) sqSum += (closes[j] - mean) ** 2;
     const sigma = Math.sqrt(sqSum / period);
-    result.push({ upper: mean + stdDev * sigma, middle: mean, lower: mean - stdDev * sigma });
+    const bandwidth = sigma > 0 ? (2 * stdDev * sigma) / mean * 100 : 0; // BB Width %
+    result.push({ upper: mean + stdDev * sigma, middle: mean, lower: mean - stdDev * sigma, bandwidth });
   }
   return result;
 }
 
-// ─── Scoring Functions (port from watchlistScanner.js) ───
+// ─── True ATR (Average True Range) ───
+
+function calcTrueATR(candles, period = 14) {
+  if (candles.length < period + 1) return [];
+  const trueRanges = [];
+  for (let i = 1; i < candles.length; i++) {
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    trueRanges.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  // Wilder smoothed ATR
+  let atr = trueRanges.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  const result = [atr];
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+    result.push(atr);
+  }
+  return result;
+}
+
+// ─── MACD (Moving Average Convergence Divergence) ───
+
+function calcMACD(closes, fast = 12, slow = 26, signalPeriod = 9) {
+  if (closes.length < slow + signalPeriod) return { macd: [], signal: [], histogram: [] };
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  // Align: emaFast starts at index (fast-1), emaSlow at index (slow-1)
+  const offset = slow - fast;
+  const macdLine = [];
+  for (let i = 0; i < emaSlow.length; i++) {
+    macdLine.push(emaFast[i + offset] - emaSlow[i]);
+  }
+  const signalLine = calcEMA(macdLine, signalPeriod);
+  const sigOffset = signalPeriod - 1;
+  const histogram = [];
+  for (let i = 0; i < signalLine.length; i++) {
+    histogram.push(macdLine[i + sigOffset] - signalLine[i]);
+  }
+  return { macd: macdLine, signal: signalLine, histogram };
+}
+
+// ─── ADX (Average Directional Index) ───
+
+function calcADX(candles, period = 14) {
+  if (candles.length < period * 2 + 1) return [];
+  const plusDM = [], minusDM = [], trArr = [];
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
+    plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    trArr.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  // Wilder smoothing
+  let smoothPlusDM = plusDM.slice(0, period).reduce((s, v) => s + v, 0);
+  let smoothMinusDM = minusDM.slice(0, period).reduce((s, v) => s + v, 0);
+  let smoothTR = trArr.slice(0, period).reduce((s, v) => s + v, 0);
+  const dxArr = [];
+  for (let i = period; i < trArr.length; i++) {
+    if (i > period) {
+      smoothPlusDM = smoothPlusDM - smoothPlusDM / period + plusDM[i];
+      smoothMinusDM = smoothMinusDM - smoothMinusDM / period + minusDM[i];
+      smoothTR = smoothTR - smoothTR / period + trArr[i];
+    }
+    const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+    const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+    const diSum = plusDI + minusDI;
+    const dx = diSum > 0 ? (Math.abs(plusDI - minusDI) / diSum) * 100 : 0;
+    dxArr.push({ dx, plusDI, minusDI });
+  }
+  if (dxArr.length < period) return [];
+  // Smooth DX into ADX
+  let adx = dxArr.slice(0, period).reduce((s, v) => s + v.dx, 0) / period;
+  const result = [{ adx, plusDI: dxArr[period - 1].plusDI, minusDI: dxArr[period - 1].minusDI }];
+  for (let i = period; i < dxArr.length; i++) {
+    adx = (adx * (period - 1) + dxArr[i].dx) / period;
+    result.push({ adx, plusDI: dxArr[i].plusDI, minusDI: dxArr[i].minusDI });
+  }
+  return result;
+}
+
+// ─── Stochastic RSI ───
+
+function calcStochRSI(closes, rsiPeriod = 14, stochPeriod = 14, kSmooth = 3) {
+  const rsiArr = calcRSI(closes, rsiPeriod);
+  if (rsiArr.length < stochPeriod) return [];
+  const result = [];
+  for (let i = stochPeriod - 1; i < rsiArr.length; i++) {
+    const window = rsiArr.slice(i - stochPeriod + 1, i + 1);
+    const min = Math.min(...window);
+    const max = Math.max(...window);
+    const stochRSI = max - min > 0 ? ((rsiArr[i] - min) / (max - min)) * 100 : 50;
+    result.push(stochRSI);
+  }
+  // %K = SMA of stochRSI
+  if (result.length < kSmooth) return [];
+  const kLine = calcSMA(result, kSmooth);
+  return kLine;
+}
+
+// ─── OBV (On-Balance Volume) ───
+
+function calcOBV(candles) {
+  if (candles.length < 2) return [];
+  const result = [0];
+  for (let i = 1; i < candles.length; i++) {
+    const prev = result[result.length - 1];
+    if (candles[i].close > candles[i - 1].close) result.push(prev + candles[i].volume);
+    else if (candles[i].close < candles[i - 1].close) result.push(prev - candles[i].volume);
+    else result.push(prev);
+  }
+  return result;
+}
+
+// ─── Scoring Functions ───
 
 function computeSwingScore(candles) {
   if (!candles || candles.length < 60) {
@@ -499,95 +605,491 @@ function computeSwingScore(candles) {
   }
 
   const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+  const currentPrice = closes[closes.length - 1];
   const factors = [];
   const signals = [];
 
-  // 1. RSI (25%)
+  // ── Shared Indicators (berechne einmal, nutze mehrfach) ──
+  const ema20 = calcEMA(closes, 20);
+  const ema50 = calcEMA(closes, 50);
+  const ema200 = closes.length >= 200 ? calcEMA(closes, 200) : null;
   const rsiValues = calcRSI(closes, 14);
-  const rsi = rsiValues.length > 0 ? rsiValues[rsiValues.length - 1] : 50;
-  let rsiScore;
-  if (rsi >= 30 && rsi <= 40) { rsiScore = 100; signals.push(`RSI ${rsi.toFixed(0)} (Kaufzone)`); }
-  else if (rsi > 40 && rsi <= 55) rsiScore = 50;
-  else if (rsi < 30) { rsiScore = 40; signals.push(`RSI ${rsi.toFixed(0)} (ueberverkauft)`); }
-  else if (rsi > 70) { rsiScore = 10; signals.push(`RSI ${rsi.toFixed(0)} (ueberkauft)`); }
-  else rsiScore = 20;
-  factors.push({ name: "RSI(14)", weight: 0.25, score: rsiScore, value: rsi.toFixed(1) });
+  const adxArr = calcADX(candles, 14);
+  const macd = calcMACD(closes, 12, 26, 9);
+  const stochRSI = calcStochRSI(closes, 14, 14, 3);
+  const bbArr = calcBollingerBands(closes, 20, 2);
+  const atrArr = calcTrueATR(candles, 14);
+  const obvArr = calcOBV(candles);
 
-  // 2. Support-Zone (20%)
-  const currentPrice = closes[closes.length - 1];
-  const tolerance = currentPrice * 0.03;
+  const e20 = ema20.length > 0 ? ema20[ema20.length - 1] : currentPrice;
+  const e50 = ema50.length > 0 ? ema50[ema50.length - 1] : currentPrice;
+  const e200 = ema200 && ema200.length > 0 ? ema200[ema200.length - 1] : null;
+  const rsi = rsiValues.length > 0 ? rsiValues[rsiValues.length - 1] : 50;
+  const adxLast = adxArr.length > 0 ? adxArr[adxArr.length - 1] : null;
+  const adxVal = adxLast ? adxLast.adx : 20;
+  const atrLast = atrArr.length > 0 ? atrArr[atrArr.length - 1] : currentPrice * 0.02;
+
+  const isBullishEMA = e200 ? (e20 > e50 && e50 > e200) : (e20 > e50);
+  const isPartialBullish = e200 ? (e20 > e200 || e50 > e200) : (e20 > e50);
+  const isBearishEMA = e200 ? (e200 > e50 && e50 > e20) : (e50 > e20);
+  const isTrending = adxVal >= 20;
+  const isStrongTrend = adxVal >= 25;
+  const distToEma20 = Math.abs(currentPrice - e20) / e20 * 100;
+  const distToEma50 = Math.abs(currentPrice - e50) / e50 * 100;
+  const priceAboveEma20 = currentPrice > e20;
+
+  // ════════════════════════════════════════════
+  // 1. TREND + PRICE STRUCTURE (20%)
+  //    ADX + EMA + Higher-Highs/Higher-Lows
+  // ════════════════════════════════════════════
+  let trendScore = 30;
+
+  // Higher-High / Higher-Low Pattern (letzte 60 Tage)
+  const swingHighs = [], swingLows = [];
+  const lookback = Math.min(candles.length, 120);
+  const recentCandles = candles.slice(-lookback);
+  for (let i = 3; i < recentCandles.length - 3; i++) {
+    const h = recentCandles[i].high, l = recentCandles[i].low;
+    if (h >= recentCandles[i-1].high && h >= recentCandles[i-2].high && h >= recentCandles[i-3].high &&
+        h >= recentCandles[i+1].high && h >= recentCandles[i+2].high && h >= recentCandles[i+3].high) {
+      swingHighs.push(h);
+    }
+    if (l <= recentCandles[i-1].low && l <= recentCandles[i-2].low && l <= recentCandles[i-3].low &&
+        l <= recentCandles[i+1].low && l <= recentCandles[i+2].low && l <= recentCandles[i+3].low) {
+      swingLows.push(l);
+    }
+  }
+  let hhhl = false; // Higher-Highs + Higher-Lows
+  if (swingHighs.length >= 2 && swingLows.length >= 2) {
+    const lastHH = swingHighs[swingHighs.length - 1] > swingHighs[swingHighs.length - 2];
+    const lastHL = swingLows[swingLows.length - 1] > swingLows[swingLows.length - 2];
+    hhhl = lastHH && lastHL;
+  }
+
+  if (isStrongTrend && isBullishEMA && hhhl) {
+    trendScore = 100;
+    signals.push(`Trend ADX ${adxVal.toFixed(0)}, HH/HL bestaetigt`);
+  } else if (isStrongTrend && isBullishEMA) {
+    trendScore = 90;
+    signals.push(`Starker Aufwaertstrend (ADX ${adxVal.toFixed(0)})`);
+  } else if (isTrending && isBullishEMA) {
+    trendScore = 80;
+    if (e200) signals.push("EMA 20>50>200");
+  } else if (isTrending && isPartialBullish) {
+    trendScore = 60;
+  } else if (hhhl) {
+    trendScore = 55; // Struktur gut, aber kein starker Trend
+  } else if (!isTrending && isPartialBullish) {
+    trendScore = 40;
+  } else if (isBearishEMA) {
+    trendScore = 5;
+  } else {
+    trendScore = 20;
+  }
+  factors.push({ name: "Trend", weight: 0.20, score: trendScore, value: `ADX ${adxVal.toFixed(0)}, ${hhhl ? "HH/HL" : ""} ${isBullishEMA ? "bull" : isBearishEMA ? "bear" : "neutral"}` });
+
+  // ════════════════════════════════════════════
+  // 2. PULLBACK QUALITY (15%)
+  //    RSI + Fibonacci-Retracement + Preis nahe EMA
+  // ════════════════════════════════════════════
+  let pullbackScore = 20;
+
+  // Fibonacci: Dynamische Swing-Erkennung statt fixem Fenster
+  // 1. Finde das Swing-Hoch (hoechster Punkt der letzten 120 Kerzen)
+  // 2. Finde das Swing-Tief VOR dem Hoch (Trendursprung, nicht nachher!)
+  // So wird der gesamte Aufwaertstrend erfasst, nicht nur ein Mini-Fenster
+  let fibLevel = -1; // -1 = nicht berechenbar
+  if (candles.length >= 30) {
+    const lookback = Math.min(candles.length, 200); // Bis zu 200 Tage zurueck (~10 Monate)
+    const recentCandles = candles.slice(-lookback);
+    let swingHigh = -Infinity, swingHighIdx = 0;
+    for (let i = 0; i < recentCandles.length; i++) {
+      if (recentCandles[i].high > swingHigh) {
+        swingHigh = recentCandles[i].high;
+        swingHighIdx = i;
+      }
+    }
+    // Swing-Tief VOR dem Hoch = Trendursprung
+    let trendLow = Infinity;
+    for (let i = 0; i < swingHighIdx; i++) {
+      if (recentCandles[i].low < trendLow) trendLow = recentCandles[i].low;
+    }
+    // Wenn Hoch ganz am Anfang liegt (kein Tief davor): Trendursprung unbekannt
+    // Nur Fallback wenn swingHigh mindestens 10 Kerzen vom Anfang entfernt
+    if (trendLow === Infinity) {
+      if (swingHighIdx >= 10) {
+        trendLow = Math.min(...recentCandles.slice(0, swingHighIdx).map(c => c.low));
+      } else {
+        // Hoch zu nah am Fenster-Anfang → Fib nicht sinnvoll berechenbar
+        trendLow = swingHigh; // range wird 0 → fibLevel bleibt -1
+      }
+    }
+    const range = swingHigh - trendLow;
+    if (range > 0 && swingHigh > currentPrice) {
+      fibLevel = (swingHigh - currentPrice) / range; // 0 = am Hoch, 1 = am Tief
+    } else if (currentPrice >= swingHigh) {
+      fibLevel = 0; // Preis ueber dem Hoch = kein Retracement
+    }
+  }
+  const atFib236 = fibLevel >= 0.18 && fibLevel <= 0.30; // Nahe 23.6% (starker Trend)
+  const atFib382 = fibLevel >= 0.32 && fibLevel <= 0.45; // Nahe 38.2%
+  const atFib50 = fibLevel >= 0.45 && fibLevel <= 0.55;  // Nahe 50%
+  const atFib618 = fibLevel >= 0.55 && fibLevel <= 0.68; // Nahe 61.8%
+  const atFibZone = atFib236 || atFib382 || atFib50 || atFib618;
+  const atDeepFib = atFib382 || atFib50 || atFib618; // Ohne 23.6% fuer Support-Konfluenz
+  const priceNearEma = distToEma20 < 2 || distToEma50 < 3;
+
+  if (isBullishEMA || isPartialBullish) {
+    // Bullischer Pfad: RSI 35-55 = Pullback-Zone, 55-65 = normaler Bereich
+    if (rsi >= 35 && rsi <= 55 && atFibZone && priceNearEma) {
+      pullbackScore = 100;
+      const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : "61.8%";
+      signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`);
+    } else if (rsi >= 35 && rsi <= 55 && priceNearEma) {
+      pullbackScore = 90;
+      signals.push(`RSI ${rsi.toFixed(0)} Pullback nahe EMA`);
+    } else if (rsi >= 35 && rsi <= 55 && atFibZone) {
+      pullbackScore = 85;
+      const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : "61.8%";
+      signals.push(`RSI ${rsi.toFixed(0)} Pullback Fib ${fibName}`);
+    } else if (rsi >= 35 && rsi <= 55) {
+      pullbackScore = 70;
+      signals.push(`RSI ${rsi.toFixed(0)} Pullback-Zone`);
+    } else if (rsi >= 55 && rsi <= 65) {
+      // Normaler Bereich im Aufwaertstrend — nicht bestrafen
+      pullbackScore = 50;
+    } else if (rsi < 35) {
+      pullbackScore = 65;
+      signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`);
+    } else if (rsi > 70) {
+      pullbackScore = 10;
+    } else {
+      // RSI 65-70 — leicht ueberkauft
+      pullbackScore = 30;
+    }
+  } else {
+    // Bearischer/neutraler Pfad — grundsaetzlich niedriger scoren als bullisch
+    if (rsi < 30 && atFibZone) { pullbackScore = 60; signals.push(`RSI ${rsi.toFixed(0)} + Fib-Support`); }
+    else if (rsi < 30) { pullbackScore = 50; signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`); }
+    else if (rsi < 40) pullbackScore = 35;
+    else if (rsi > 70) pullbackScore = 5;
+    else pullbackScore = 20;
+  }
+  factors.push({ name: "Pullback", weight: 0.15, score: pullbackScore, value: `RSI ${rsi.toFixed(0)}, Fib ${fibLevel >= 0 ? (fibLevel * 100).toFixed(0) + "%" : "?"}` });
+
+  // ════════════════════════════════════════════
+  // 3. MOMENTUM REVERSAL (20%)
+  //    MACD + StochRSI + RSI-Divergenz
+  // ════════════════════════════════════════════
+  let momentumScore = 30;
+
+  // MACD Histogram
+  let macdBullish = false, macdCrossing = false, macdAboveZero = false;
+  if (macd.histogram.length >= 3) {
+    const h = macd.histogram;
+    macdBullish = h[h.length - 1] > h[h.length - 2];
+    macdCrossing = (h[h.length - 2] < 0 && h[h.length - 1] > 0) || (h[h.length - 3] < 0 && h[h.length - 1] > 0);
+  }
+  if (macd.macd.length > 0) macdAboveZero = macd.macd[macd.macd.length - 1] > 0;
+
+  // StochRSI
+  let stochBullish = false, stochOversold = false;
+  if (stochRSI.length >= 2) {
+    const sNow = stochRSI[stochRSI.length - 1], sPrev = stochRSI[stochRSI.length - 2];
+    stochOversold = sNow < 25;
+    stochBullish = sNow > sPrev && sPrev < 30;
+  }
+
+  // RSI-Divergenz: Preis macht tieferes Tief, RSI macht hoeheres Tief = bullisch
+  let rsiBullDiv = false;
+  if (rsiValues.length >= 30 && closes.length >= 40) {
+    // RSI-Array ist kuerzer als closes (um rsiPeriod versetzt)
+    const rsiOffset = closes.length - rsiValues.length;
+    // Finde tiefstes Tief + zugehoeriges RSI in zwei Zeitfenstern
+    let minPrice20 = Infinity, rsiAtMin20 = 50;
+    for (let i = closes.length - 20; i < closes.length; i++) {
+      if (closes[i] < minPrice20) {
+        minPrice20 = closes[i];
+        const ri = i - rsiOffset;
+        if (ri >= 0 && ri < rsiValues.length) rsiAtMin20 = rsiValues[ri];
+      }
+    }
+    let minPrice40 = Infinity, rsiAtMin40 = 50;
+    for (let i = Math.max(0, closes.length - 40); i < closes.length - 15; i++) {
+      if (closes[i] < minPrice40) {
+        minPrice40 = closes[i];
+        const ri = i - rsiOffset;
+        if (ri >= 0 && ri < rsiValues.length) rsiAtMin40 = rsiValues[ri];
+      }
+    }
+    // Bullische Divergenz: Preis tieferes/gleiches Tief, RSI hoeheres Tief
+    if (minPrice20 <= minPrice40 * 1.02 && rsiAtMin20 > rsiAtMin40 + 3) {
+      rsiBullDiv = true;
+    }
+  }
+
+  if (macdCrossing && stochBullish && rsiBullDiv) {
+    momentumScore = 100;
+    signals.push("MACD Cross + RSI-Divergenz + StochRSI");
+  } else if (rsiBullDiv && (macdBullish || stochBullish)) {
+    momentumScore = 95;
+    signals.push("Bullische RSI-Divergenz + Momentum");
+  } else if (macdCrossing && stochBullish) {
+    momentumScore = 90;
+    signals.push("MACD Cross + StochRSI dreht");
+  } else if (rsiBullDiv) {
+    momentumScore = 80;
+    signals.push("Bullische RSI-Divergenz");
+  } else if (macdCrossing) {
+    momentumScore = 75;
+    signals.push("MACD Bullish Cross");
+  } else if (macdBullish && stochBullish) {
+    momentumScore = 70;
+    signals.push("Momentum dreht bullisch");
+  } else if (macdBullish && macdAboveZero) {
+    momentumScore = 55;
+  } else if (macdBullish) {
+    momentumScore = 40;
+  } else if (stochOversold) {
+    momentumScore = 35;
+  } else {
+    momentumScore = 10;
+  }
+  factors.push({ name: "Momentum", weight: 0.20, score: momentumScore, value: `MACD ${macdBullish ? "+" : "-"}, StochRSI ${stochRSI.length > 0 ? stochRSI[stochRSI.length - 1].toFixed(0) : "?"}, Div ${rsiBullDiv ? "ja" : "nein"}` });
+
+  // ════════════════════════════════════════════
+  // 4. VOLUMEN + PULLBACK-QUALITAET (15%)
+  //    OBV + Richtungsvolumen + abnehmendes Vol im Pullback
+  //    KRITISCH: Hohes Volumen bei roter/langer Kerze = Distribution, NICHT bullisch
+  // ════════════════════════════════════════════
+  let volScore = 25;
+  const recentCandlesVol = candles.slice(-20);
+  const avgVol = recentCandlesVol.reduce((s, c) => s + c.volume, 0) / recentCandlesVol.length;
+  const lastCandle_ = candles[candles.length - 1];
+  const lastVol = lastCandle_.volume;
+  const volRatio = avgVol > 0 ? lastVol / avgVol : 1;
+
+  // Letzte Kerze: rot/gruen + Kerzengroesse relativ zu ATR
+  const lastIsRed = lastCandle_.close < lastCandle_.open;
+  const lastBodySize = Math.abs(lastCandle_.close - lastCandle_.open);
+  const lastCandleATR = atrLast || currentPrice * 0.02;
+  const lastIsLong = lastBodySize > lastCandleATR * 0.8; // Kerze > 80% des ATR = grosse Kerze
+
+  // Selling Pressure Detection: hohe rote Kerze + ueberdurchschnittliches Volumen
+  const sellingPressure = lastIsRed && volRatio >= 1.2 && lastIsLong;
+  // Starke Selling Pressure: sehr hohe rote Kerze + sehr hohes Volumen
+  const heavySelling = lastIsRed && volRatio >= 1.8 && lastBodySize > lastCandleATR;
+
+  // Auch letzte 3 Kerzen pruefen: mehrere rote High-Vol Kerzen = Distribution
+  const last3 = candles.slice(-3);
+  const redHighVolCount = last3.filter(c => c.close < c.open && avgVol > 0 && c.volume > avgVol * 1.2).length;
+  const distributionPattern = redHighVolCount >= 2;
+
+  // Up-Volume vs Down-Volume (letzte 10 Tage)
+  const last10 = candles.slice(-10);
+  let upVol = 0, downVol = 0;
+  for (const c of last10) {
+    if (c.close >= c.open) upVol += c.volume; else downVol += c.volume;
+  }
+  const volDirection = (upVol + downVol) > 0 ? upVol / (upVol + downVol) : 0.5;
+
+  // OBV-Trend
+  let obvRising = false;
+  if (obvArr.length >= 20) {
+    const obvEma = calcEMA(obvArr.slice(-50), 10);
+    if (obvEma.length >= 2) obvRising = obvEma[obvEma.length - 1] > obvEma[obvEma.length - 2];
+  }
+
+  // Pullback-Volumen: letzte 5 Down-Days = abnehmendes Volumen = gesund
+  const last5Down = candles.slice(-10).filter(c => c.close < c.open).slice(-5);
+  let pullbackVolDeclining = false;
+  if (last5Down.length >= 3) {
+    pullbackVolDeclining = last5Down[last5Down.length - 1].volume < last5Down[0].volume * 0.8;
+  }
+
+  // Letzte 3 Kerzen Kontext: wie viele gruen/rot?
+  const last3Green = last3.filter(c => c.close >= c.open).length;
+  const last3AllRed = last3Green === 0;
+
+  let volLabel = "";
+  if (heavySelling && last3AllRed) {
+    // Panikverkauf: starke rote Kerze + alle 3 letzten rot
+    volScore = 0;
+    volLabel = "Panikverkauf";
+    signals.push(`\u26a0\ufe0f ${volLabel}: Vol ${volRatio.toFixed(1)}x, 3x rot`);
+  } else if (distributionPattern) {
+    // Distribution: 2+ rote High-Vol Kerzen in letzten 3
+    volScore = 5;
+    volLabel = "Distribution";
+    signals.push(`\u26a0\ufe0f Distribution: ${redHighVolCount}/3 rote High-Vol Kerzen`);
+  } else if (heavySelling) {
+    // Einzelne starke rote Kerze — Warnsignal, aber kein Panik
+    volScore = 15;
+    volLabel = "Verkaufsdruck";
+    signals.push(`Verkaufsdruck: Vol ${volRatio.toFixed(1)}x bei roter Kerze`);
+  } else if (sellingPressure) {
+    // Maessiger Verkaufsdruck: rote Kerze + leicht erhoehtes Vol
+    volScore = 25;
+    volLabel = "leichter Druck";
+  } else if (obvRising && pullbackVolDeclining && volDirection > 0.55) {
+    // Beste Kombi: OBV steigt + Pullback-Vol sinkt + mehr Up-Vol
+    volScore = last3Green >= 2 ? 100 : 85;
+    volLabel = "Akkumulation";
+    signals.push(`Akkumulation + Pullback auf low Vol${last3Green < 2 ? " (letzte Kerze rot)" : ""}`);
+  } else if (obvRising && volRatio >= 1.5 && !lastIsRed) {
+    volScore = 90;
+    volLabel = "Akkumulation";
+    signals.push(`Vol ${volRatio.toFixed(1)}x + Akkumulation`);
+  } else if (obvRising && pullbackVolDeclining) {
+    volScore = 75;
+    volLabel = "PB-Vol sinkt";
+    signals.push("OBV steigend, Pullback-Vol sinkt");
+  } else if (obvRising && volDirection > 0.55) {
+    volScore = 60;
+    volLabel = "OBV+";
+    signals.push("OBV steigend");
+  } else if (volRatio >= 1.5 && !lastIsRed) {
+    volScore = 45;
+    volLabel = "hohes Vol";
+  } else if (volDirection < 0.4) {
+    volScore = 10;
+    volLabel = "Distribution";
+  } else {
+    volScore = 30;
+    volLabel = "neutral";
+  }
+  factors.push({ name: "Volumen", weight: 0.15, score: volScore, value: `${volLabel}, Vol ${volRatio.toFixed(1)}x${lastIsRed ? " \ud83d\udd34" : " \ud83d\udfe2"}, Dir ${(volDirection * 100).toFixed(0)}%` });
+
+  // ════════════════════════════════════════════
+  // 5. RELATIVE STAERKE vs INDEX (10%)
+  //    Outperformer haben signifikant hoehere Swing-Erfolgsquote
+  // ════════════════════════════════════════════
+  let relStrScore = 40;
+
+  // Relative Staerke: 20d + 50d Performance kombiniert
+  // Starke mittelfristige Perf + kurzfristiger Pullback = idealer Swing-Einstieg
+  let perf20d = 0, perf5d = 0, perf50d = 0;
+  if (closes.length >= 20) {
+    perf20d = ((currentPrice - closes[closes.length - 20]) / closes[closes.length - 20]) * 100;
+    perf5d = closes.length >= 5 ? ((currentPrice - closes[closes.length - 5]) / closes[closes.length - 5]) * 100 : 0;
+    perf50d = closes.length >= 50 ? ((currentPrice - closes[closes.length - 50]) / closes[closes.length - 50]) * 100 : perf20d * 2;
+
+    // Kombination: mittelfristig stark + kurzfristiger Ruecksetzer = ideal
+    if (perf20d > 3 && perf5d < 0 && perf5d > -5) {
+      relStrScore = 100; // Outperformer mit Pullback — Swing ideal
+      signals.push(`Rel. Staerke +${perf20d.toFixed(1)}% 20d, Pullback ${perf5d.toFixed(1)}%`);
+    } else if (perf50d > 10 && perf20d > 0 && perf5d < 0) {
+      relStrScore = 90; // Langfristig stark + kurzfristiger Dip
+      signals.push(`50d +${perf50d.toFixed(0)}%, Pullback ${perf5d.toFixed(1)}%`);
+    } else if (perf20d > 5) {
+      relStrScore = 75;
+      signals.push(`Outperformer +${perf20d.toFixed(1)}% 20d`);
+    } else if (perf20d > 2) {
+      relStrScore = 60;
+    } else if (perf20d > 0) {
+      relStrScore = 45;
+    } else if (perf20d > -3) {
+      relStrScore = 30;
+    } else if (perf20d > -8) {
+      relStrScore = 15;
+    } else {
+      relStrScore = 5; // Starke Underperformance
+    }
+  }
+  factors.push({ name: "Rel.Staerke", weight: 0.10, score: relStrScore, value: closes.length >= 20 ? `${perf20d.toFixed(1)}% 20d, ${perf5d.toFixed(1)}% 5d` : "?" });
+
+  // ════════════════════════════════════════════
+  // 6. VOLATILITAETS-SETUP (10%)
+  //    BB Squeeze + ATR-Kontraktion = Ausbruch erwartet
+  // ════════════════════════════════════════════
+  let volSetupScore = 30;
+
+  if (bbArr.length >= 20) {
+    const bb = bbArr[bbArr.length - 1];
+    const bandwidth = bb.bandwidth;
+    const recentBW = bbArr.slice(-Math.min(50, bbArr.length)).map(b => b.bandwidth);
+    const avgBW = recentBW.reduce((s, v) => s + v, 0) / recentBW.length;
+    const isSqueeze = bandwidth < avgBW * 0.75;
+    const relPos = (bb.upper - bb.lower) > 0 ? (currentPrice - bb.lower) / (bb.upper - bb.lower) : 0.5;
+
+    if (isSqueeze && relPos < 0.4) {
+      volSetupScore = 100;
+      signals.push("BB Squeeze (Ausbruch erwartet)");
+    } else if (isSqueeze) {
+      volSetupScore = 75;
+      signals.push("BB Squeeze");
+    } else if (currentPrice < bb.lower) {
+      volSetupScore = 80;
+      signals.push("Unter Bollinger Band");
+    } else if (relPos < 0.25) {
+      volSetupScore = 60;
+      signals.push("Nahe BB-Low");
+    } else if (relPos > 0.85) {
+      volSetupScore = 10;
+    } else {
+      volSetupScore = 30;
+    }
+  }
+  factors.push({ name: "Volatilitaet", weight: 0.10, score: volSetupScore, value: volSetupScore >= 70 ? "Squeeze/Setup" : "normal" });
+
+  // ════════════════════════════════════════════
+  // 7. SUPPORT-KONFLUENZ (10%)
+  //    Swing-Lows + EMA + Fibonacci zusammen
+  // ════════════════════════════════════════════
+  let supportScore = 0;
+  const supportTolerance = atrLast * 1.5;
+
+  // Swing-Lows als Support
   let bounceCount = 0;
   for (let i = 2; i < candles.length - 2; i++) {
     const low = candles[i].low;
-    if (low <= candles[i - 1].low && low <= candles[i - 2].low &&
-        low <= candles[i + 1].low && low <= candles[i + 2].low) {
-      if (low >= currentPrice - tolerance && low <= currentPrice + tolerance) {
-        bounceCount++;
-      }
+    if (low <= candles[i-1].low && low <= candles[i-2].low &&
+        low <= candles[i+1].low && low <= candles[i+2].low) {
+      if (Math.abs(low - currentPrice) <= supportTolerance) bounceCount++;
     }
   }
-  let supportScore;
-  if (bounceCount >= 3) { supportScore = 100; signals.push(`${bounceCount} Swing-Lows als Support`); }
-  else if (bounceCount === 2) supportScore = 70;
-  else if (bounceCount === 1) supportScore = 40;
-  else supportScore = 0;
-  factors.push({ name: "Support", weight: 0.20, score: supportScore, value: `${bounceCount} Bounces` });
 
-  // 3. EMA-Ordnung (15%)
-  let emaScore = 50;
-  if (closes.length >= 200) {
-    const ema20 = calcEMA(closes, 20);
-    const ema50 = calcEMA(closes, 50);
-    const ema200 = calcEMA(closes, 200);
-    if (ema20.length && ema50.length && ema200.length) {
-      const e20 = ema20[ema20.length - 1];
-      const e50 = ema50[ema50.length - 1];
-      const e200 = ema200[ema200.length - 1];
-      if (e20 > e50 && e50 > e200) { emaScore = 100; signals.push("EMA 20>50>200"); }
-      else if (e20 > e200 || e50 > e200) emaScore = 60;
-      else if (e200 > e50 && e50 > e20) emaScore = 0;
-      else emaScore = 30;
-    }
+  // EMA-Support
+  const nearEma20 = distToEma20 < 2 && priceAboveEma20;
+  const nearEma50 = distToEma50 < 3 && currentPrice > e50;
+  const nearEma200 = e200 ? (Math.abs(currentPrice - e200) / e200 * 100 < 3 && currentPrice > e200) : false;
+  const emaSupport = nearEma20 || nearEma50 || nearEma200;
+
+  // Konfluenz zaehlen: Swing-Low + EMA + Fib-Zone (38.2%+ fuer Support, nicht 23.6%)
+  let confluence = 0;
+  if (bounceCount >= 2) confluence++;
+  if (emaSupport) confluence++;
+  if (atDeepFib) confluence++;
+
+  if (confluence >= 3) {
+    supportScore = 100;
+    signals.push("Konfluenz: Support + EMA + Fib");
+  } else if (confluence === 2) {
+    supportScore = 85;
+    if (bounceCount >= 2 && emaSupport) signals.push(`${bounceCount} Supports + EMA`);
+    else if (bounceCount >= 2 && atDeepFib) signals.push(`${bounceCount} Supports + Fib`);
+    else if (emaSupport && atDeepFib) signals.push("EMA + Fib Konfluenz");
+  } else if (bounceCount >= 3) {
+    supportScore = 80;
+    signals.push(`${bounceCount} Swing-Lows Support`);
+  } else if (nearEma200) {
+    supportScore = 70;
+    signals.push("EMA 200 Support");
+  } else if (bounceCount >= 2) {
+    supportScore = 60;
+  } else if (nearEma50) {
+    supportScore = 50;
+    signals.push("EMA 50 Support");
+  } else if (nearEma20 && isBullishEMA) {
+    supportScore = 45;
+  } else if (bounceCount === 1 || atDeepFib) {
+    supportScore = 30;
+  } else {
+    supportScore = 5;
   }
-  factors.push({ name: "EMA", weight: 0.15, score: emaScore, value: emaScore >= 80 ? "bullisch" : emaScore >= 40 ? "neutral" : "baerisch" });
-
-  // 4. Bollinger Bands (15%)
-  let bbScore = 30;
-  const bbArr = calcBollingerBands(closes, 20, 2);
-  if (bbArr.length > 0) {
-    const bb = bbArr[bbArr.length - 1];
-    const bandwidth = bb.upper - bb.lower;
-    const relPos = bandwidth > 0 ? (currentPrice - bb.lower) / bandwidth : 0.5;
-    if (currentPrice < bb.lower) { bbScore = 100; signals.push("Unter Bollinger Band"); }
-    else if (relPos < 0.25) { bbScore = 70; signals.push("Nahe BB-Low"); }
-    else if (relPos < 0.5) bbScore = 40;
-    else bbScore = 15;
-  }
-  factors.push({ name: "BB", weight: 0.15, score: bbScore, value: bbScore >= 70 ? "ueberverkauft" : "neutral" });
-
-  // 5. Volumen (15%)
-  const recentVols = candles.slice(-20).map((c) => c.volume);
-  const avgVol = recentVols.reduce((s, v) => s + v, 0) / recentVols.length;
-  const lastVol = candles[candles.length - 1].volume;
-  const volRatio = avgVol > 0 ? lastVol / avgVol : 1;
-  let volScore;
-  if (volRatio >= 2) { volScore = 100; signals.push(`Vol ${volRatio.toFixed(1)}x Avg`); }
-  else if (volRatio >= 1.5) volScore = 70;
-  else if (volRatio >= 1) volScore = 40;
-  else volScore = 20;
-  factors.push({ name: "Volumen", weight: 0.15, score: volScore, value: `${volRatio.toFixed(1)}x` });
-
-  // 6. Trend-Slope (10%)
-  let trendScore = 50;
-  const ema50Arr = calcEMA(closes, 50);
-  if (ema50Arr.length >= 10) {
-    const slope = (ema50Arr[ema50Arr.length - 1] - ema50Arr[ema50Arr.length - 10]) / ema50Arr[ema50Arr.length - 10];
-    if (slope > 0.03) trendScore = 100;
-    else if (slope > 0.01) trendScore = 70;
-    else if (slope > -0.01) trendScore = 40;
-    else trendScore = 10;
-  }
-  factors.push({ name: "Trend", weight: 0.10, score: trendScore, value: trendScore >= 70 ? "aufwaerts" : trendScore >= 30 ? "seitwaerts" : "abwaerts" });
+  factors.push({ name: "Support", weight: 0.10, score: supportScore, value: `Konfluenz ${confluence}/3, ${bounceCount} Bounces` });
 
   const total = Math.round(factors.reduce((s, f) => s + f.score * f.weight, 0));
   return { total, factors, signals };
@@ -640,17 +1142,21 @@ function computeIntradayScore(intradayCandles, dailyCandles) {
   }
   factors.push({ name: "Rel.Staerke", weight: 0.20, score: relScore, value: relScore >= 70 ? "stark" : "normal" });
 
-  // 4. ATR-Breakout (15%)
+  // 4. ATR-Breakout (15%) — True ATR (nicht nur High-Low)
   let atrScore = 30;
-  if (dailyCandles && dailyCandles.length >= 15) {
-    const atrValues = dailyCandles.slice(-15).map((c) => c.high - c.low);
-    const atr = atrValues.reduce((s, v) => s + v, 0) / atrValues.length;
-    const todayRange = dailyCandles[dailyCandles.length - 1].high - dailyCandles[dailyCandles.length - 1].low;
-    const atrRatio = atr > 0 ? todayRange / atr : 1;
-    if (atrRatio >= 2) { atrScore = 100; signals.push(`ATR-Breakout ${atrRatio.toFixed(1)}x`); }
-    else if (atrRatio >= 1.5) atrScore = 70;
-    else if (atrRatio >= 1) atrScore = 30;
-    else atrScore = 10;
+  if (dailyCandles && dailyCandles.length >= 16) {
+    const atrArr = calcTrueATR(dailyCandles, 14);
+    if (atrArr.length > 0) {
+      const atr = atrArr[atrArr.length - 1];
+      const today = dailyCandles[dailyCandles.length - 1];
+      const prevClose = dailyCandles[dailyCandles.length - 2].close;
+      const todayTR = Math.max(today.high - today.low, Math.abs(today.high - prevClose), Math.abs(today.low - prevClose));
+      const atrRatio = atr > 0 ? todayTR / atr : 1;
+      if (atrRatio >= 2) { atrScore = 100; signals.push(`ATR-Breakout ${atrRatio.toFixed(1)}x`); }
+      else if (atrRatio >= 1.5) { atrScore = 70; signals.push(`ATR ${atrRatio.toFixed(1)}x`); }
+      else if (atrRatio >= 1) atrScore = 30;
+      else atrScore = 10;
+    }
   }
   factors.push({ name: "ATR", weight: 0.15, score: atrScore, value: atrScore >= 70 ? "expansion" : "normal" });
 
@@ -724,6 +1230,10 @@ async function scanSymbolServer(symbol) {
   const price = lastCandle?.close || meta.regularMarketPrice || 0;
   const change = prevCandle ? ((price - prevCandle.close) / prevCandle.close) * 100 : 0;
 
+  // ATR fuer Trade-Setup Stops
+  const atrArr = calcTrueATR(dailyCandles, 14);
+  const atr = atrArr.length > 0 ? atrArr[atrArr.length - 1] : price * 0.03;
+
   // Display symbol: remove .DE suffix
   const displaySymbol = symbol.replace(/\.DE$/i, "");
 
@@ -734,6 +1244,7 @@ async function scanSymbolServer(symbol) {
     currency: meta.currency || "USD",
     price,
     change,
+    atr,
     swing,
     intraday,
     timestamp: new Date().toISOString(),
@@ -769,6 +1280,69 @@ async function sendPush(subscription, payload, env) {
   }
 }
 
+// ─── Telegram Bot ───
+
+async function sendTelegram(text, env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+    console.log("[Telegram] Skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured.");
+    return { sent: false, error: "not configured" };
+  }
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: env.TELEGRAM_CHAT_ID,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      console.log(`[Telegram] API error: ${data.description}`);
+      return { sent: false, error: data.description };
+    }
+    return { sent: true };
+  } catch (e) {
+    console.log(`[Telegram] Send failed: ${e.message}`);
+    return { sent: false, error: e.message };
+  }
+}
+
+async function sendTelegramMessages(messages, env) {
+  let sent = 0;
+  for (const msg of messages) {
+    // Split if over 4096 chars
+    if (msg.length <= 4096) {
+      const result = await sendTelegram(msg, env);
+      if (result.sent) sent++;
+    } else {
+      // Split at section dividers
+      const parts = [];
+      let current = "";
+      for (const line of msg.split("\n")) {
+        if (current.length + line.length + 1 > 4000 && current.length > 0) {
+          parts.push(current);
+          current = line;
+        } else {
+          current += (current ? "\n" : "") + line;
+        }
+      }
+      if (current) parts.push(current);
+      for (const part of parts) {
+        const result = await sendTelegram(part, env);
+        if (result.sent) sent++;
+      }
+    }
+    // Small delay between messages to respect rate limits
+    if (messages.indexOf(msg) < messages.length - 1) {
+      await new Promise(r => setTimeout(r, 400));
+    }
+  }
+  return sent;
+}
+
 // ─── Time-Based Symbol Selection ───
 // DAX 40:   07:30–19:00 UTC (08:30–20:00 DE)
 // S&P 500:  14:00–22:00 UTC (15:00–23:00 DE)
@@ -783,9 +1357,9 @@ function getActiveSymbols() {
   const daxActive = timeDecimal >= 7.5 && timeDecimal < 19;   // 07:30–18:59 UTC
   const spActive  = timeDecimal >= 14  && timeDecimal < 22;   // 14:00–21:59 UTC
 
-  if (daxActive && spActive) return { symbols: [...SP500_SYMBOLS, ...DAX40_SYMBOLS], mode: "both" };
+  if (daxActive && spActive) return { symbols: [...SP100_SYMBOLS, ...DAX40_SYMBOLS], mode: "both" };
   if (daxActive)             return { symbols: [...DAX40_SYMBOLS], mode: "dax-only" };
-  if (spActive)              return { symbols: [...SP500_SYMBOLS], mode: "sp500-only" };
+  if (spActive)              return { symbols: [...SP100_SYMBOLS], mode: "sp100-only" };
   return { symbols: [], mode: "closed" };
 }
 
@@ -807,94 +1381,84 @@ async function runChunkedScan(env) {
   // 1. Determine which symbols to scan based on current time
   const { symbols: activeSymbols, mode: currentMode } = getActiveSymbols();
 
-  // 2. Load consolidated state (1 KV read instead of 5)
-  const state = (await env.NCAPITAL_KV.get("scan:state", "json")) || {
-    pointer: 0, lastPointer: -1, retryCount: 0,
-    mode: null, totalChunks: 0, totalSymbols: 0,
-    lastRun: null, lastFullScan: null,
-  };
-
-  // 3. Market closed — nothing to do
+  // 2. Market closed — skip without writing (saves KV writes)
   if (currentMode === "closed" || activeSymbols.length === 0) {
     console.log(`[Scan] Market closed. Skipping.`);
-    state.lastRun = new Date().toISOString();
-    await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
     return { chunk: 0, totalChunks: 0, scanned: 0, mode: "closed" };
   }
 
-  // 4. Load config and compute chunking for active symbols
+  // 3. Load config + live accumulator (state + results in ONE key = 1 KV read)
   const config = (await env.NCAPITAL_KV.get("scan:config", "json")) || SCAN_DEFAULTS;
   const chunkSize = config.chunkSize || SCAN_DEFAULTS.chunkSize;
   const parallelBatch = config.parallelBatch || SCAN_DEFAULTS.parallelBatch;
   const totalChunks = Math.ceil(activeSymbols.length / chunkSize);
 
-  // 5. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
-  const prevMode = state.mode;
-  let pointer = state.pointer;
+  const live = (await env.NCAPITAL_KV.get("scan:live", "json")) || {
+    pointer: 0, lastPointer: -1, retryCount: 0,
+    mode: null, totalChunks: 0, totalSymbols: 0,
+    results: [], lastRun: null, lastFullScan: null,
+  };
 
-  if (prevMode !== null && prevMode !== currentMode) {
-    console.log(`[Scan] Mode transition: ${prevMode} -> ${currentMode}. Resetting cycle.`);
+  // 4. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
+  let pointer = live.pointer;
 
-    // Merge partial results from previous cycle if any chunks were completed
-    if (pointer > 0 && state.totalChunks) {
-      console.log(`[Scan] Merging partial results (${pointer}/${state.totalChunks} chunks from ${prevMode}).`);
-      await mergeAndNotify(env, config, pointer);
-      state.lastFullScan = new Date().toISOString();
+  if (live.mode !== null && live.mode !== currentMode) {
+    console.log(`[Scan] Mode transition: ${live.mode} -> ${currentMode}. Resetting cycle.`);
+    if (pointer > 0 && live.results.length > 0) {
+      console.log(`[Scan] Processing partial results (${live.results.length} symbols from ${live.mode}).`);
+      await processAndNotify(env, config, live.results);
+      live.lastFullScan = new Date().toISOString();
     }
-
-    // Clean stale chunk keys from previous mode
-    for (let i = 0; i < (state.totalChunks || 0); i++) {
-      await env.NCAPITAL_KV.delete(`scan:chunk:${i}`);
-    }
-
-    // Reset pointer for new mode
     pointer = 0;
-    state.pointer = 0;
-    state.retryCount = 0;
-    state.lastPointer = -1;
+    live.pointer = 0;
+    live.results = [];
+    live.retryCount = 0;
+    live.lastPointer = -1;
   }
 
-  // 6. Update mode info in state
-  state.mode = currentMode;
-  state.totalChunks = totalChunks;
-  state.totalSymbols = activeSymbols.length;
+  // 5. Update mode info
+  live.mode = currentMode;
+  live.totalChunks = totalChunks;
+  live.totalSymbols = activeSymbols.length;
 
-  // 7. Stuck-pointer detection: if same pointer runs 3+ times, force advance
-  if (pointer === state.lastPointer) {
-    if (state.retryCount >= 2) {
-      console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks} stuck after ${state.retryCount + 1} attempts. Skipping.`);
-      await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify([]), { expirationTtl: 7200 });
+  // 6. Stuck-pointer detection: if same pointer runs 3+ times, force advance
+  if (pointer === live.lastPointer) {
+    if (live.retryCount >= 2) {
+      console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks} stuck after ${live.retryCount + 1} attempts. Skipping.`);
       const skipNext = pointer + 1;
       if (skipNext >= totalChunks) {
-        await mergeAndNotify(env, config, totalChunks);
-        state.pointer = 0;
-        state.lastFullScan = new Date().toISOString();
+        await processAndNotify(env, config, live.results);
+        live.pointer = 0;
+        live.results = [];
+        live.lastFullScan = new Date().toISOString();
       } else {
-        state.pointer = skipNext;
+        live.pointer = skipNext;
       }
-      state.retryCount = 0;
-      state.lastRun = new Date().toISOString();
-      await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
+      live.retryCount = 0;
+      live.lastRun = new Date().toISOString();
+      await env.NCAPITAL_KV.put("scan:live", JSON.stringify(live));
       return { chunk: pointer + 1, totalChunks, scanned: 0, skipped: true, mode: currentMode };
     }
-    state.retryCount++;
+    live.retryCount++;
+    // Persist retry state early so retryCount survives crashes
+    await env.NCAPITAL_KV.put("scan:live", JSON.stringify(live));
   } else {
-    state.retryCount = 0;
+    live.retryCount = 0;
   }
-  state.lastPointer = pointer;
+  live.lastPointer = pointer;
 
-  // 8. Determine symbols for this chunk from activeSymbols
+  // 7. Determine symbols for this chunk
   const start = pointer * chunkSize;
   const end = Math.min(start + chunkSize, activeSymbols.length);
   const chunkSymbols = activeSymbols.slice(start, end);
 
   console.log(`[Scan] [${currentMode}] Chunk ${pointer + 1}/${totalChunks}: ${chunkSymbols.length} symbols (${chunkSymbols[0]}..${chunkSymbols[chunkSymbols.length - 1]})`);
 
-  // 9. Scan in parallel batches (with per-batch timeout safety)
+  // 8. Scan in parallel batches (with per-batch timeout safety)
   const results = [];
   const scanStart = Date.now();
   for (let i = 0; i < chunkSymbols.length; i += parallelBatch) {
-    if (Date.now() - scanStart > 26000) {
+    if (Date.now() - scanStart > 20000) {
       console.log(`[Scan] Time limit approaching after ${results.length} symbols. Saving partial results.`);
       break;
     }
@@ -905,36 +1469,30 @@ async function runChunkedScan(env) {
     results.push(...batchResults);
   }
 
-  // 10. Write chunk results to KV (TTL 2h)
-  await env.NCAPITAL_KV.put(`scan:chunk:${pointer}`, JSON.stringify(results), { expirationTtl: 7200 });
+  // 9. Accumulate results in live state (no separate chunk keys needed)
+  live.results.push(...results);
 
-  // 11. Advance pointer or merge
+  // 10. Advance pointer or process full cycle
   const nextPointer = pointer + 1;
 
   if (nextPointer >= totalChunks) {
-    console.log(`[Scan] [${currentMode}] All ${totalChunks} chunks done. Merging...`);
-    await mergeAndNotify(env, config, totalChunks);
-    state.pointer = 0;
-    state.lastFullScan = new Date().toISOString();
+    console.log(`[Scan] [${currentMode}] All ${totalChunks} chunks done. Processing ${live.results.length} results...`);
+    await processAndNotify(env, config, live.results);
+    live.pointer = 0;
+    live.results = [];
+    live.lastFullScan = new Date().toISOString();
   } else {
-    state.pointer = nextPointer;
+    live.pointer = nextPointer;
   }
 
-  // 12. Save consolidated state (1 KV write instead of 6)
-  state.lastRun = new Date().toISOString();
-  await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
+  // 11. Single KV write: state + accumulated results in one key
+  live.lastRun = new Date().toISOString();
+  await env.NCAPITAL_KV.put("scan:live", JSON.stringify(live));
 
   return { chunk: pointer + 1, totalChunks, scanned: results.length, mode: currentMode };
 }
 
-async function mergeAndNotify(env, config, totalChunks) {
-  // Read all chunks
-  const allResults = [];
-  for (let i = 0; i < totalChunks; i++) {
-    const chunk = await env.NCAPITAL_KV.get(`scan:chunk:${i}`, "json");
-    if (chunk) allResults.push(...chunk);
-  }
-
+async function processAndNotify(env, config, allResults) {
   // Filter + sort by SWING score (primary), keep combined for reference
   const threshold = config.threshold || SCAN_DEFAULTS.threshold;
   const notifyThreshold = config.notifyThreshold || SCAN_DEFAULTS.notifyThreshold;
@@ -959,20 +1517,20 @@ async function mergeAndNotify(env, config, totalChunks) {
     return { total: arr.length, positive: pos, negative: neg, unchanged: unch, avgChange: Math.round(avgChg * 100) / 100 };
   };
 
-  // Save merged results + stats in one combined write (saves 1 KV write)
+  // Save results + stats (combined into one key to save writes)
   const stats = {
     totalScanned: allResults.length,
     hits: filtered.length,
     errors: allResults.filter((r) => r.swing.error || r.intraday.error).length,
     timestamp: new Date().toISOString(),
-    breadth: { dax: breadth(daxAll), sp500: breadth(spAll) },
+    breadth: { dax: breadth(daxAll), sp100: breadth(spAll) },
   };
-  await Promise.all([
-    env.NCAPITAL_KV.put("scan:results", JSON.stringify(filtered), { expirationTtl: 7200 }),
-    env.NCAPITAL_KV.put("scan:stats", JSON.stringify(stats)),
-  ]);
+  await env.NCAPITAL_KV.put("scan:results", JSON.stringify({ hits: filtered, stats }), { expirationTtl: 259200 });
 
   console.log(`[Scan] Merged: ${allResults.length} total, ${filtered.length} hits (swing >= ${threshold}), ${stats.errors} errors`);
+
+  // Send Telegram scanner alerts (swing >= 75, independent from Web Push)
+  await sendTelegramScannerAlerts(filtered, env);
 
   // Send push notifications for high-score results
   const notifyResults = filtered.filter((r) => r.swing.total >= notifyThreshold);
@@ -1043,6 +1601,69 @@ async function mergeAndNotify(env, config, totalChunks) {
   if (writes.length > 0) await Promise.all(writes);
 
   console.log(`[Scan] Notifications sent: ${notifications.length} to ${allSubs.length} devices`);
+}
+
+// ── Telegram Scanner Alerts (independent from Web Push, swing >= 75) ──
+
+async function sendTelegramScannerAlerts(filtered, env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+  if (!filtered || filtered.length === 0) return;
+
+  // Own cooldown per symbol (separate from push cooldown)
+  const cooldownKeys = filtered.map((r) => `tg-cooldown:${r.displaySymbol}`);
+  const cooldownValues = await Promise.all(cooldownKeys.map((k) => env.NCAPITAL_KV.get(k)));
+
+  const newHits = [];
+  const cooldownWrites = [];
+  for (let i = 0; i < filtered.length; i++) {
+    if (cooldownValues[i]) continue;
+    newHits.push(filtered[i]);
+    cooldownWrites.push(env.NCAPITAL_KV.put(cooldownKeys[i], "1", { expirationTtl: 3600 }));
+  }
+  if (newHits.length === 0) return;
+
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
+  const lines = newHits.map((r) => {
+    const price = `${fmtP(r.price)} ${r.currency}`;
+    const sigs = r.swing.signals.slice(0, 3).map((s) => esc(s)).join(", ");
+    const dot = r.change >= 0 ? "\u{1F7E2}" : "\u{1F534}";
+    const chg = r.change >= 0 ? `+${r.change.toFixed(1)}%` : `${r.change.toFixed(1)}%`;
+    // ATR-basiertes Setup
+    const atr = r.atr || r.price * 0.03;
+    const stopDist = atr * 1.5;
+    const stop = r.price - stopDist;
+    const risk = r.price - stop;
+    const target = r.price + risk * 2.5;
+    const stopPct = ((stopDist / r.price) * 100).toFixed(1);
+    const crv = risk > 0 ? ((target - r.price) / risk).toFixed(1) : "?";
+    // Fib-Level aus Pullback-Faktor extrahieren
+    const pullbackF = (r.swing.factors || []).find(f => f.name === "Pullback");
+    const fibMatch = pullbackF?.value?.match(/Fib (\d+)%/);
+    const fibNum = fibMatch ? parseInt(fibMatch[1]) : -1;
+    const fibName = fibNum >= 18 && fibNum <= 30 ? "23.6%" :
+                    fibNum >= 32 && fibNum <= 45 ? "38.2%" :
+                    fibNum >= 45 && fibNum <= 55 ? "50%" :
+                    fibNum >= 55 && fibNum <= 68 ? "61.8%" :
+                    fibNum >= 72 && fibNum <= 82 ? "78.6%" : "";
+    const fibLabel = fibName ? `Fib ${fibName} (${fibNum}%)` : fibNum >= 0 ? `Fib ${fibNum}%` : "";
+
+    let line = `${dot} <b>${esc(r.displaySymbol)}</b>  Swing ${r.swing.total}  \u2502  ${price} (${chg})\n`;
+    line += `   Entry ${fmtP(r.price)}  \u2502  Stop ${fmtP(stop)} (-${stopPct}%)  \u2502  Ziel ${fmtP(target)}\n`;
+    line += `   CRV <b>${crv}</b>  \u2502  ATR ${fmtP(atr)}`;
+    if (fibLabel) line += `  \u2502  ${fibLabel}`;
+    line += "\n";
+    if (sigs) line += `   ${sigs}`;
+    return line;
+  });
+
+  const header = newHits.length === 1
+    ? "\u{1F3AF} <b>Trade-Setup</b>"
+    : `\u{1F3AF} <b>${newHits.length} Trade-Setups</b>`;
+  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Swing \u{2265} 75 \u{2022} ATR-Stop 1.5x \u{2022} CRV 2.5:1</i>`;
+  await sendTelegram(msg, env);
+  await Promise.all(cooldownWrites);
+  console.log(`[Telegram] Scanner alerts sent: ${newHits.length} hits`);
 }
 
 // ─── Market Briefing Generation ───
@@ -1190,6 +1811,11 @@ function computeIntermarketSignals(macro) {
   if (eur && !eur.error) {
     signals.push({ indicator: "EUR/USD", value: eur.price.toFixed(4), change: eur.change.toFixed(2), interpretation: eur.change > 0 ? "EUR staerker" : "USD staerker", signal: "INFO" });
   }
+  const jpy = macro["JPY=X"];
+  if (jpy && !jpy.error) {
+    const carry = jpy.change > 0.5 ? "Yen schwach → Carry-Trade intakt" : jpy.change < -0.5 ? "Yen staerker → Carry-Trade-Risiko" : "stabil";
+    signals.push({ indicator: "USD/JPY", value: jpy.price.toFixed(2), change: jpy.change.toFixed(2), interpretation: carry, signal: jpy.change < -1 ? "VORSICHT" : "INFO" });
+  }
   const btc = macro["BTC-USD"];
   if (btc && !btc.error) {
     signals.push({ indicator: "Bitcoin", value: btc.price.toFixed(0), change: btc.change.toFixed(2), interpretation: btc.change > 0 ? "Risk-On" : "Risk-Off", signal: Math.abs(btc.change) > 5 ? "VOLATIL" : "NEUTRAL" });
@@ -1232,16 +1858,21 @@ function generateTradeSetups(scanResults, maxSetups = 5) {
     .slice(0, maxSetups)
     .map(r => {
       const entry = r.price;
-      const stopDist = entry * 0.05;
+      // ATR-basierter Stop: 1.5x ATR unter Entry (statt fixer 5%)
+      const atr = r.atr || entry * 0.03;
+      const stopDist = atr * 1.5;
       const stop = Math.round((entry - stopDist) * 100) / 100;
       const risk = entry - stop;
-      const target = Math.round((entry + risk * 2) * 100) / 100;
+      // Target: 2.5x Risk (CRV 2.5:1) fuer Swing-Trades
+      const target = Math.round((entry + risk * 2.5) * 100) / 100;
       const crv = risk > 0 ? ((target - entry) / risk).toFixed(1) : "0";
+      const stopPct = ((stopDist / entry) * 100).toFixed(1);
       return {
         symbol: r.displaySymbol, currency: r.currency,
         swingScore: r.swing.total, intradayScore: r.intraday.total,
         combinedScore: r.combinedScore || Math.round(r.swing.total * 0.6 + r.intraday.total * 0.4),
-        price: entry, change: r.change, entry: Math.round(entry * 100) / 100, stop, target, crv,
+        price: entry, change: r.change, atr: Math.round(atr * 100) / 100,
+        entry: Math.round(entry * 100) / 100, stop, target, crv, stopPct,
         signals: r.swing.signals.slice(0, 3), factors: r.swing.factors,
       };
     });
@@ -1285,6 +1916,243 @@ function getSeasonalContext() {
   };
 }
 
+// ─── Telegram Briefing Formatter ───
+
+function formatBriefingForTelegram(briefing) {
+  const messages = [];
+  const type = briefing.type;
+  const region = type === "morning" ? "Europa" : "Wall Street";
+  const emoji = type === "morning" ? "\u2600\uFE0F" : "\uD83C\uDF19";
+  const now = new Date(briefing.generatedAt);
+  const weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+  const months = ["Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+  const dateStr = `${weekdays[now.getDay()]}, ${now.getDate()}. ${months[now.getMonth()]} ${now.getFullYear()}`;
+  const timeStr = now.toLocaleString("de-DE", { timeZone: "Europe/Berlin", hour: "2-digit", minute: "2-digit" });
+
+  // HTML-escape for Telegram (& < > must be escaped)
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const fmtChg = (c) => {
+    if (c == null || isNaN(c)) return "\u2014";
+    const v = Number(c);
+    return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
+  };
+  const fmtDir = (c) => {
+    if (c == null || isNaN(c)) return "\u25AB\uFE0F";
+    return Number(c) > 0.1 ? "\uD83D\uDFE2" : Number(c) < -0.1 ? "\uD83D\uDD34" : "\u25AB\uFE0F";
+  };
+  const fmtP = (p, d = 2) => p != null && !isNaN(p) ? Number(p).toFixed(d) : "\u2014";
+
+  // Build macro lookup
+  const macroMap = {};
+  for (const cat of (briefing.macroOverview || [])) {
+    for (const item of cat.items) {
+      if (!item.error) macroMap[item.symbol] = item;
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // NACHRICHT 1: Globaler Marktueberblick
+  // ═══════════════════════════════════════
+  let msg1 = `${emoji} <b>${type === "morning" ? "MORNING" : "AFTERNOON"} BRIEFING</b>\n`;
+  msg1 += `\uD83D\uDCC5 ${dateStr} \u2022 ${timeStr} CET\n`;
+  msg1 += `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n`;
+
+  // Futures => Richtung fuer den Tag
+  if (briefing.futures) {
+    const es = briefing.futures.es;
+    const nq = briefing.futures.nq;
+    if (es || nq) {
+      msg1 += `\n\uD83C\uDFAF <b>Futures-Signal:</b>`;
+      if (es) msg1 += ` S&amp;P <b>${fmtChg(es.change)}</b>`;
+      if (es && nq) msg1 += `  \u2502  `;
+      if (nq) msg1 += `Nasdaq <b>${fmtChg(nq.change)}</b>`;
+      msg1 += `\n`;
+    }
+  }
+
+  // Indizes — US + Europa
+  const indices = briefing.macroOverview?.find(c => c.category === "indices");
+  if (indices?.items?.length) {
+    msg1 += `\n\uD83C\uDFE6 <b>Leitindizes</b>\n`;
+    for (const idx of indices.items) {
+      if (idx.error) continue;
+      let context = "";
+      if (idx.w52) {
+        if (idx.w52.pctFromHigh != null && Math.abs(idx.w52.pctFromHigh) < 2) context = " \u2022 <i>nahe ATH</i>";
+        else if (idx.w52.pctFromHigh != null) context = ` \u2022 <i>${Number(idx.w52.pctFromHigh).toFixed(1)}% v. Hoch</i>`;
+      }
+      const trend5d = idx.trend5d != null ? ` (5T: ${fmtChg(idx.trend5d)})` : "";
+      const pd = idx.price > 1000 ? 0 : 2;
+      msg1 += `${fmtDir(idx.change)} <b>${esc(idx.name)}</b>  ${fmtP(idx.price, pd)}  <b>${fmtChg(idx.change)}</b>${trend5d}${context}\n`;
+    }
+  }
+
+  // Asien
+  const asia = briefing.macroOverview?.find(c => c.category === "asia");
+  if (asia?.items?.length) {
+    msg1 += `\n\uD83C\uDF0F <b>Asien-Pazifik</b>\n`;
+    for (const idx of asia.items) {
+      if (idx.error) continue;
+      const pd = idx.price > 1000 ? 0 : 2;
+      const trend5d = idx.trend5d != null ? ` (5T: ${fmtChg(idx.trend5d)})` : "";
+      msg1 += `${fmtDir(idx.change)} <b>${esc(idx.name)}</b>  ${fmtP(idx.price, pd)}  <b>${fmtChg(idx.change)}</b>${trend5d}\n`;
+    }
+  }
+
+  // Makro-Dashboard — kompakt in Zeilen
+  msg1 += `\n\uD83D\uDCCA <b>Makro-Dashboard</b>\n`;
+
+  const vix = macroMap["^VIX"];
+  if (vix) {
+    const level = vix.price >= 30 ? "\uD83D\uDD34 Panik" : vix.price >= 20 ? "\uD83D\uDFE0 Erhoht" : vix.price >= 15 ? "\uD83D\uDFE1 Normal" : "\uD83D\uDFE2 Sorglos";
+    msg1 += `VIX <b>${fmtP(vix.price)}</b> ${fmtChg(vix.change)} \u2502 ${level}`;
+    if (briefing.vixHistory?.ytd?.avg) msg1 += ` \u2502 YTD-\u00D8 ${fmtP(briefing.vixHistory.ytd.avg)}`;
+    msg1 += `\n`;
+  }
+
+  const tnx = macroMap["^TNX"];
+  if (tnx) msg1 += `US 10Y <b>${fmtP(tnx.price)}%</b> \u2502 ${tnx.change > 0.02 ? "steigend \u2191" : tnx.change < -0.02 ? "fallend \u2193" : "stabil \u2192"}\n`;
+
+  const gold = macroMap["GC=F"];
+  const oil = macroMap["CL=F"];
+  if (gold || oil) {
+    let line = "";
+    if (gold) line += `Gold <b>${fmtP(gold.price, 0)}$</b> ${fmtChg(gold.change)}`;
+    if (gold && oil) line += `  \u2502  `;
+    if (oil) line += `WTI <b>${fmtP(oil.price)}$</b> ${fmtChg(oil.change)}`;
+    msg1 += `${line}\n`;
+  }
+
+  const eur = macroMap["EURUSD=X"];
+  const jpy = macroMap["JPY=X"];
+  if (eur || jpy) {
+    let line = "";
+    if (eur) line += `EUR/USD <b>${fmtP(eur.price, 4)}</b> ${fmtChg(eur.change)}`;
+    if (eur && jpy) line += `  \u2502  `;
+    if (jpy) line += `USD/JPY <b>${fmtP(jpy.price, 2)}</b> ${fmtChg(jpy.change)}`;
+    msg1 += `${line}\n`;
+  }
+
+  const btc = macroMap["BTC-USD"];
+  if (btc) msg1 += `BTC <b>${fmtP(btc.price, 0)}$</b> ${fmtChg(btc.change)}\n`;
+
+  // Intermarket-Signale — kompakter
+  if (briefing.intermarketSignals?.length) {
+    msg1 += `\n\uD83D\uDD17 <b>Intermarket-Signale</b>\n`;
+    const sigIcon = { GIER: "\uD83D\uDFE2", NEUTRAL: "\uD83D\uDFE1", VORSICHT: "\uD83D\uDFE0", RISIKO: "\uD83D\uDD34", "RISK-OFF": "\uD83D\uDD34", "RISK-ON": "\uD83D\uDFE2", EXPANSIV: "\uD83D\uDFE2", RESTRIKTIV: "\uD83D\uDD34", INFLATIONAER: "\uD83D\uDD34", DEFLATIONAER: "\uD83D\uDD35", VOLATIL: "\uD83D\uDFE0", INFO: "\u25AB\uFE0F" };
+    for (const sig of briefing.intermarketSignals) {
+      const ic = sigIcon[sig.signal] || "\u25AB\uFE0F";
+      msg1 += `${ic} ${esc(sig.indicator)}: <b>${sig.signal}</b> \u2014 ${esc(sig.interpretation)}\n`;
+    }
+  }
+
+  if (briefing.aggregateLiquidity) {
+    const liq = briefing.aggregateLiquidity;
+    msg1 += `\n\uD83D\uDCA7 Liquiditaet: <b>${liq.level}</b> (${liq.avgRatio}x \u00D8)\n`;
+  }
+
+  messages.push(msg1);
+
+  // ═══════════════════════════════════════
+  // NACHRICHT 2: Events & Szenarien
+  // ═══════════════════════════════════════
+  let msg2 = "";
+
+  const events = briefing.seasonalContext?.upcomingEvents;
+  if (events?.length) {
+    const upcoming = events.filter(e => e.daysUntil >= 0 && e.daysUntil <= 10).slice(0, 8);
+    const highImpact = upcoming.filter(e => e.impact === "high");
+    const others = upcoming.filter(e => e.impact !== "high");
+
+    if (highImpact.length > 0) {
+      msg2 += `\u26A1 <b>Events im Fokus</b>\n`;
+      msg2 += `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n`;
+      for (const ev of highImpact) {
+        const dayLabel = ev.daysUntil === 0 ? "\uD83D\uDD34 HEUTE" : ev.daysUntil === 1 ? "\uD83D\uDFE0 Morgen" : `\uD83D\uDCC5 in ${ev.daysUntil} Tagen`;
+        msg2 += `\n${dayLabel}\n`;
+        msg2 += `<b>${esc(ev.name)}</b>\n`;
+        if (ev.description) msg2 += `${esc(ev.description)}\n`;
+        // Szenarien basierend auf Event-Typ
+        if (ev.type === "fed") {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Dovisher Ton / Zinspause \u2192 Tech + Growth Rally</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Hawkisher Ton / Zinserhoehung \u2192 Bonds runter, Dollar hoch</i>\n`;
+        } else if (ev.type === "ecb") {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Zinssenkung \u2192 DAX + EUR-Exporteure profitieren</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Restriktiv \u2192 EUR staerker, DAX unter Druck</i>\n`;
+        } else if (ev.type === "data" && ev.name.includes("CPI")) {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: CPI unter Erwartung \u2192 Zinssenkungshoffnung, Risk-On</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: CPI ueber Erwartung \u2192 Zinsangst, Tech + Growth leiden</i>\n`;
+        } else if (ev.type === "data" && ev.name.includes("Payrolls")) {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Starker Arbeitsmarkt \u2192 Konjunkturoptimismus</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Zu heiss \u2192 Fed bleibt restriktiv; Zu schwach \u2192 Rezessionsangst</i>\n`;
+        } else if (ev.type === "minutes") {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Interne Zinssenkungsdebatte \u2192 Maerkte hoffen</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Einigkeit fuer laenger hoch \u2192 Enttaeuschung</i>\n`;
+        } else {
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Besser als erwartet \u2192 Risk-On</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Schlechter als erwartet \u2192 Risk-Off</i>\n`;
+        }
+      }
+    }
+
+    if (others.length > 0) {
+      msg2 += `\n\uD83D\uDCC6 <b>Weitere Termine</b>\n`;
+      for (const ev of others) {
+        const dayLabel = ev.daysUntil === 0 ? "Heute" : ev.daysUntil === 1 ? "Morgen" : `in ${ev.daysUntil}T`;
+        msg2 += `\uD83D\uDFE1 ${esc(ev.name)} \u2014 ${dayLabel}\n`;
+      }
+    }
+  }
+
+  // Saisonale Einordnung
+  const seasonal = briefing.seasonalContext;
+  if (seasonal) {
+    msg2 += `\n\uD83D\uDCC8 <b>Saisonaler Kontext</b>\n`;
+    if (seasonal.monthPattern) {
+      const sp = seasonal.monthPattern.sp500Avg;
+      const dx = seasonal.monthPattern.daxAvg;
+      const spIcon = sp > 0.5 ? "\uD83D\uDFE2" : sp < -0.2 ? "\uD83D\uDD34" : "\uD83D\uDFE1";
+      msg2 += `${spIcon} <b>${seasonal.monthName}</b>: S&amp;P hist. ${sp > 0 ? "+" : ""}${Number(sp).toFixed(1)}% \u2502 DAX hist. ${dx > 0 ? "+" : ""}${Number(dx).toFixed(1)}%\n`;
+      if (seasonal.monthPattern.note) msg2 += `<i>${esc(seasonal.monthPattern.note)}</i>\n`;
+    }
+    if (seasonal.presidentialCycle) {
+      const pc = seasonal.presidentialCycle;
+      msg2 += `\uD83C\uDFDB ${pc.name} (S&amp;P-\u00D8 ${pc.sp500Avg > 0 ? "+" : ""}${pc.sp500Avg}%)\n`;
+    }
+    if (seasonal.midtermNote) msg2 += `\u26A0\uFE0F <i>${esc(seasonal.midtermNote)}</i>\n`;
+  }
+
+  if (msg2) messages.push(msg2);
+
+  // ═══════════════════════════════════════
+  // NACHRICHT 3: Sektoren & Disclaimer
+  // ═══════════════════════════════════════
+  let msg3 = "";
+
+  if (briefing.sectorRotation?.length) {
+    msg3 += `\uD83C\uDFED <b>Sektorrotation ${region}</b>\n`;
+    msg3 += `\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n`;
+    const top = briefing.sectorRotation.slice(0, 6);
+    for (let i = 0; i < top.length; i++) {
+      const s = top[i];
+      const medal = i === 0 ? "\uD83E\uDD47" : i === 1 ? "\uD83E\uDD48" : i === 2 ? "\uD83E\uDD49" : `${i + 1}.`;
+      const syms = s.topSymbols?.slice(0, 3).map(t => t.symbol).join(", ") || "";
+      const chgIcon = s.avgChange > 0 ? "\uD83D\uDFE2" : s.avgChange < 0 ? "\uD83D\uDD34" : "\u25AB\uFE0F";
+      msg3 += `${medal} <b>${esc(s.sector)}</b> ${chgIcon} ${fmtChg(s.avgChange)}  Score ${s.avgSwingScore}\n`;
+      if (syms) msg3 += `     <i>${syms}</i>\n`;
+    }
+  }
+
+  msg3 += `\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n`;
+  msg3 += `\uD83D\uDD0D <i>Trade-Setups kommen separat via Screener-Alerts (alle 5 Min, Swing \u2265 75)</i>\n`;
+  msg3 += `\u26A0\uFE0F <i>Keine Anlageberatung. Alle Angaben ohne Gewaehr.</i>`;
+
+  if (msg3) messages.push(msg3);
+
+  return messages;
+}
+
 async function generateBriefing(env, type) {
   const startTime = Date.now();
 
@@ -1292,7 +2160,8 @@ async function generateBriefing(env, type) {
   const [macro, vixHistory] = await Promise.all([fetchMacroData(), fetchVixHistory()]);
 
   // 2. Read latest scan results (1 KV read)
-  const scanResults = (await env.NCAPITAL_KV.get("scan:results", "json")) || [];
+  const scanData = (await env.NCAPITAL_KV.get("scan:results", "json")) || {};
+  const scanResults = scanData.hits || scanData || [];
 
   // 3. Compute analyses
   const intermarketSignals = computeIntermarketSignals(macro);
@@ -1304,21 +2173,21 @@ async function generateBriefing(env, type) {
     items: symbols.map(s => ({ name: s.name, symbol: s.symbol, ...(macro[s.symbol] || { price: 0, change: 0, error: "Keine Daten" }) })),
   }));
 
-  // 5. Region-specific content
-  let regionFocus, scannerHits, sectorRotation, tradeSetups;
+  // 5. Region-specific content (Sektoren + Hits), but Trade-Setups from ALL markets
+  let regionFocus, scannerHits, sectorRotation;
   if (type === "morning") {
     regionFocus = "EU";
     const daxResults = scanResults.filter(r => r.symbol.endsWith(".DE"));
     scannerHits = daxResults.slice(0, 15);
     sectorRotation = computeSectorRotation(daxResults, "EU");
-    tradeSetups = generateTradeSetups(daxResults, 5);
   } else {
     regionFocus = "US";
     const usResults = scanResults.filter(r => !r.symbol.endsWith(".DE"));
     scannerHits = usResults.slice(0, 15);
     sectorRotation = computeSectorRotation(usResults, "US");
-    tradeSetups = generateTradeSetups(usResults, 5);
   }
+  // Trade-Setups: beste aus ALLEN Maerkten (unabhaengig von Region)
+  const tradeSetups = generateTradeSetups(scanResults, 5);
 
   // 6. Compute volume/liquidity overview for indices
   const VOLUME_INDEX_SYMS = ["^GSPC", "^GDAXI", "^DJI", "^IXIC"];
@@ -1370,6 +2239,40 @@ async function generateBriefing(env, type) {
   return briefing;
 }
 
+// ─── Telegram Briefing Cron ───
+
+async function maybeSendBriefingTelegram(env) {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
+
+  const cetHour = getCETHour();
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Determine if we're in a briefing window
+  let type = null;
+  if (cetHour >= 8.4 && cetHour < 8.7) type = "morning";      // 08:24–08:42 CET
+  else if (cetHour >= 14.9 && cetHour < 15.2) type = "afternoon"; // 14:54–15:12 CET
+  else return;
+
+  // Cooldown: only send once per type per day
+  const cooldownKey = `telegram:sent:${type}:${today}`;
+  const alreadySent = await env.NCAPITAL_KV.get(cooldownKey);
+  if (alreadySent) return;
+
+  console.log(`[Telegram] Generating ${type} briefing for Telegram...`);
+
+  try {
+    const briefing = await generateBriefing(env, type);
+    const messages = formatBriefingForTelegram(briefing);
+    const sent = await sendTelegramMessages(messages, env);
+
+    // Set cooldown (18h TTL — enough to prevent re-send until next day)
+    await env.NCAPITAL_KV.put(cooldownKey, String(sent), { expirationTtl: 64800 });
+    console.log(`[Telegram] ${type} briefing sent: ${sent} messages.`);
+  } catch (e) {
+    console.log(`[Telegram] Error sending ${type} briefing: ${e.message}`);
+  }
+}
+
 // ─── Briefing Route Handlers ───
 
 async function handleBriefingRoutes(url, request, env) {
@@ -1412,6 +2315,22 @@ async function handleBriefingRoutes(url, request, env) {
     const type = body.type === "afternoon" ? "afternoon" : "morning";
     const briefing = await generateBriefing(env, type);
     return jsonResponse({ ok: true, type, generationMs: briefing.generationMs, hits: briefing.scannerHits.length, setups: briefing.tradeSetups.length });
+  }
+
+  // POST /api/briefing/telegram — generate + send via Telegram
+  if (path === "/api/briefing/telegram" && request.method === "POST") {
+    if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+      return jsonResponse({ error: "Telegram nicht konfiguriert. TELEGRAM_BOT_TOKEN und TELEGRAM_CHAT_ID als Secrets setzen." }, 500);
+    }
+    let body;
+    try { body = await request.json(); } catch { body = {}; }
+    const type = body.type === "afternoon" ? "afternoon" : body.type === "morning" ? "morning" : (getCETHour() >= 14 ? "afternoon" : "morning");
+
+    const briefing = await generateBriefing(env, type);
+    const messages = formatBriefingForTelegram(briefing);
+    const sent = await sendTelegramMessages(messages, env);
+
+    return jsonResponse({ ok: true, type, messagesSent: sent, generationMs: briefing.generationMs });
   }
 
   return null;
@@ -1464,14 +2383,14 @@ async function handlePushRoutes(url, request, env, user) {
 
   // GET /api/push/status
   if (path === "/api/push/status" && request.method === "GET") {
-    const [subs, state] = await Promise.all([
+    const [subs, live] = await Promise.all([
       env.NCAPITAL_KV.get(pushKey, "json"),
-      env.NCAPITAL_KV.get("scan:state", "json"),
+      env.NCAPITAL_KV.get("scan:live", "json"),
     ]);
     return jsonResponse({
       subscribed: !!(subs && subs.length > 0),
       deviceCount: subs ? subs.length : 0,
-      lastRun: state?.lastRun || null,
+      lastRun: live?.lastRun || null,
     }, 200, 0);
   }
 
@@ -1556,51 +2475,51 @@ async function handlePushRoutes(url, request, env, user) {
 async function handleScanRoutes(url, request, env) {
   const path = url.pathname;
 
-  // GET /api/scan/results — filtered scan results from KV (2 reads: results + state)
+  // GET /api/scan/results — filtered scan results from KV
   if (path === "/api/scan/results" && request.method === "GET") {
-    const [results, state] = await Promise.all([
+    const [scanData, live] = await Promise.all([
       env.NCAPITAL_KV.get("scan:results", "json"),
-      env.NCAPITAL_KV.get("scan:state", "json"),
+      env.NCAPITAL_KV.get("scan:live", "json"),
     ]);
-    return jsonResponse({ results: results || [], lastFullScan: state?.lastFullScan || null, count: (results || []).length }, 200, 60);
+    const hits = scanData?.hits || scanData || [];
+    return jsonResponse({ results: hits, lastFullScan: live?.lastFullScan || null, count: hits.length }, 200, 60);
   }
 
-  // GET /api/scan/status — scan progress info (mode-aware, 2 KV reads instead of 7)
+  // GET /api/scan/status — scan progress info (mode-aware)
   if (path === "/api/scan/status" && request.method === "GET") {
     const { mode: liveMode, symbols: liveSymbols } = getActiveSymbols();
-    const [state, config, stats] = await Promise.all([
-      env.NCAPITAL_KV.get("scan:state", "json"),
+    const [live, config, scanData] = await Promise.all([
+      env.NCAPITAL_KV.get("scan:live", "json"),
       env.NCAPITAL_KV.get("scan:config", "json"),
-      env.NCAPITAL_KV.get("scan:stats", "json"),
+      env.NCAPITAL_KV.get("scan:results", "json"),
     ]);
     const cfg = config || SCAN_DEFAULTS;
-    const s = state || { pointer: 0, mode: null, totalChunks: 0, totalSymbols: 0, lastRun: null, lastFullScan: null, retryCount: 0 };
+    const s = live || { pointer: 0, mode: null, totalChunks: 0, totalSymbols: 0, lastRun: null, lastFullScan: null, retryCount: 0 };
     const chunkSize = cfg.chunkSize || SCAN_DEFAULTS.chunkSize;
 
     return jsonResponse({
       currentChunk: s.pointer || 0,
       totalChunks: s.totalChunks || Math.ceil(liveSymbols.length / chunkSize),
       totalSymbols: s.totalSymbols || liveSymbols.length,
-      sp500Count: SP500_SYMBOLS.length,
+      sp100Count: SP100_SYMBOLS.length,
       dax40Count: DAX40_SYMBOLS.length,
       scanMode: s.mode || liveMode,
       liveMode,
       lastRun: s.lastRun,
       lastFullScan: s.lastFullScan,
-      stats: stats || null,
+      stats: scanData?.stats || null,
       config: cfg,
       retryCount: s.retryCount || 0,
     }, 200, 0);
   }
 
-  // POST /api/scan/reset — reset scan state (1 KV write instead of 4)
+  // POST /api/scan/reset — reset scan state
   if (path === "/api/scan/reset" && request.method === "POST") {
-    const state = (await env.NCAPITAL_KV.get("scan:state", "json")) || {};
-    state.pointer = 0;
-    state.retryCount = 0;
-    state.lastPointer = -1;
-    state.mode = null;
-    await env.NCAPITAL_KV.put("scan:state", JSON.stringify(state));
+    await env.NCAPITAL_KV.put("scan:live", JSON.stringify({
+      pointer: 0, lastPointer: -1, retryCount: 0,
+      mode: null, totalChunks: 0, totalSymbols: 0,
+      results: [], lastRun: null, lastFullScan: null,
+    }));
     return jsonResponse({ ok: true, message: "Scan pointer and mode reset" });
   }
 
@@ -1618,11 +2537,11 @@ async function handleScanRoutes(url, request, env) {
     return jsonResponse({ ok: true, config: updated });
   }
 
-  // GET /api/scan/debug — raw chunk data for debugging
+  // GET /api/scan/debug — current accumulator data for debugging
   if (path === "/api/scan/debug" && request.method === "GET") {
-    const chunk = await env.NCAPITAL_KV.get("scan:chunk:0", "json");
-    if (!chunk) return jsonResponse({ error: "No chunk data" }, 404);
-    const summary = chunk.map((r) => ({
+    const live = await env.NCAPITAL_KV.get("scan:live", "json");
+    if (!live || !live.results || live.results.length === 0) return jsonResponse({ error: "No accumulated results" }, 404);
+    const summary = live.results.map((r) => ({
       symbol: r.symbol,
       price: r.price,
       swing: r.swing.total,
@@ -1630,7 +2549,7 @@ async function handleScanRoutes(url, request, env) {
       swingErr: r.swing.error || null,
       intradayErr: r.intraday.error || null,
     }));
-    return jsonResponse({ count: chunk.length, errors: summary.filter((s) => s.swingErr || s.intradayErr).length, data: summary });
+    return jsonResponse({ pointer: live.pointer, totalChunks: live.totalChunks, accumulated: live.results.length, errors: summary.filter((s) => s.swingErr || s.intradayErr).length, data: summary });
   }
 
   return null;
@@ -1728,6 +2647,7 @@ export default {
           "/api/briefing/latest",
           "/api/briefing/morning",
           "/api/briefing/afternoon",
+          "/api/briefing/telegram (POST)",
         ],
       }, 404);
     }
@@ -1756,6 +2676,7 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runChunkedScan(env));
+    ctx.waitUntil(runChunkedScan(env).catch((err) => console.log(`[Cron] Scan error: ${err.message}`)));
+    ctx.waitUntil(maybeSendBriefingTelegram(env).catch((err) => console.log(`[Cron] Briefing error: ${err.message}`)));
   },
 };
