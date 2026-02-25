@@ -1,22 +1,13 @@
-// ─── Auto-Score Hook ───
-// Orchestriert das Laden von Marktdaten und die Berechnung aller Indikatoren.
+// ─── Auto-Score Hook (Merkmalliste v2) ───
+// Laedt Marktdaten und berechnet Merkmalliste-Ergebnisse fuer alle autoKeys.
 
 import { useState, useCallback } from "react";
 import { fetchOHLCV, fetchIndexData } from "../services/marketData";
-import {
-  detectSupportZone,
-  analyzeVolumeProfile,
-  detectCandlePattern,
-  analyzeTrend,
-  computeRSI,
-  analyzeEMAs,
-  checkLeadingIndex,
-  analyzeBollingerBands,
-} from "../services/indicators";
+import { evaluateMerkmalliste } from "../services/indicators";
 
 /**
  * @returns {{
- *   autoScores: Object|null,
+ *   merkmalResults: Object|null,  // { [autoKey]: { value, confidence, detail } }
  *   loading: boolean,
  *   error: string|null,
  *   dataTimestamp: Date|null,
@@ -27,7 +18,7 @@ import {
  * }}
  */
 export function useAutoScore() {
-  const [autoScores, setAutoScores] = useState(null);
+  const [merkmalResults, setMerkmalResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [dataTimestamp, setDataTimestamp] = useState(null);
@@ -45,14 +36,13 @@ export function useAutoScore() {
 
     try {
       // Yahoo-Ticker fuer europaeische Aktien anpassen
-      // Flatex/Xetra: SAP → SAP.DE, etc.
       let yahooSymbol = symbol.toUpperCase();
       const addedDE = currency === "EUR" && !yahooSymbol.includes(".");
       if (addedDE) {
         yahooSymbol = `${yahooSymbol}.DE`;
       }
 
-      // Index-Daten immer parallel starten
+      // Index-Daten parallel starten
       const indexPromise = fetchIndexData(currency);
 
       // Symbol-Daten laden — bei EUR mit .DE Fallback auf reines Symbol
@@ -61,7 +51,6 @@ export function useAutoScore() {
         symbolResult = await fetchOHLCV(yahooSymbol, "1y", "1d");
       } catch (deError) {
         if (addedDE) {
-          // .DE fehlgeschlagen → US-Symbol ohne Suffix versuchen
           yahooSymbol = symbol.toUpperCase();
           symbolResult = await fetchOHLCV(yahooSymbol, "1y", "1d");
         } else {
@@ -84,20 +73,10 @@ export function useAutoScore() {
       const isStale = symbolResult.stale || indexResult.stale;
       setStaleData(isStale);
 
-      // Alle Indikatoren berechnen
-      const scores = {
-        q1: detectSupportZone(candles, entryPrice),
-        q2: analyzeVolumeProfile(candles, entryPrice),
-        q3: detectCandlePattern(candles),
-        q4: analyzeTrend(candles),
-        q5: computeRSI(candles),
-        q6: analyzeEMAs(candles),
-        // q7 bleibt manuell (Chartmuster)
-        q8: checkLeadingIndex(indexCandles),
-        q9: analyzeBollingerBands(candles),
-      };
+      // Merkmalliste auswerten
+      const results = evaluateMerkmalliste(candles, entryPrice, indexCandles);
 
-      setAutoScores(scores);
+      setMerkmalResults(results);
       setMarketData({
         symbol: yahooSymbol,
         candles: candles.length,
@@ -111,7 +90,7 @@ export function useAutoScore() {
     } catch (err) {
       console.error("Auto-Score Fehler:", err);
       setError(err.message || "Unbekannter Fehler");
-      setAutoScores(null);
+      setMerkmalResults(null);
       setMarketData(null);
     } finally {
       setLoading(false);
@@ -119,7 +98,7 @@ export function useAutoScore() {
   }, []);
 
   const resetAutoScores = useCallback(() => {
-    setAutoScores(null);
+    setMerkmalResults(null);
     setError(null);
     setDataTimestamp(null);
     setStaleData(false);
@@ -127,7 +106,7 @@ export function useAutoScore() {
   }, []);
 
   return {
-    autoScores,
+    merkmalResults,
     loading,
     error,
     dataTimestamp,

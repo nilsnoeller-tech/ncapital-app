@@ -1,168 +1,50 @@
-// ─── Technische Indikator-Berechnungen fuer Auto-Scoring ───
-// Jede Funktion gibt zurueck: { optionIndex, confidence, detail, rawValue }
-// optionIndex = welche Antwort-Option vorausgewaehlt wird (0-basiert)
+// ─── Merkmalliste-basierte Indikator-Auswertung ───
+// Berechnet fuer jeden autoKey der Merkmalliste: { value: boolean, confidence: number, detail: string }
 
 import { RSI, EMA, SMA, BollingerBands } from "technicalindicators";
 
-// ══════════════════════════════════════════════════════════════
-// Q1: Unterstuetzungszone (Support Zone Detection)
-// ══════════════════════════════════════════════════════════════
+// ── Hilfsfunktionen ──
 
-export function detectSupportZone(candles, entryPrice, tolerancePct = 0.02) {
-  if (!candles || candles.length < 20 || !entryPrice) {
-    return { optionIndex: 0, confidence: 0, detail: "Nicht genug Daten", rawValue: null };
+function calcATR(candles, period = 14) {
+  if (candles.length < period + 1) return 0;
+  let atrSum = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const prev = candles[i - 1];
+    const c = candles[i];
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+    atrSum += tr;
   }
-
-  const tolerance = entryPrice * tolerancePct;
-  const lowerBound = entryPrice - tolerance;
-  const upperBound = entryPrice + tolerance;
-
-  // Swing Lows finden (5-Bar-Fenster: low[i] ist tiefer als 2 davor und 2 danach)
-  const swingLows = [];
-  for (let i = 2; i < candles.length - 2; i++) {
-    const low = candles[i].low;
-    if (
-      low <= candles[i - 1].low &&
-      low <= candles[i - 2].low &&
-      low <= candles[i + 1].low &&
-      low <= candles[i + 2].low
-    ) {
-      swingLows.push({ index: i, price: low, date: candles[i].date });
-    }
-  }
-
-  // Bounces im Einstiegsbereich zaehlen
-  const bouncesAtLevel = swingLows.filter(
-    (sl) => sl.price >= lowerBound && sl.price <= upperBound
-  );
-
-  // Zusaetzlich: Lange untere Dochte im Bereich (Kaufdruck-Signal)
-  const longWicks = candles.filter((c) => {
-    const bodySize = Math.abs(c.close - c.open);
-    const lowerWick = Math.min(c.open, c.close) - c.low;
-    return (
-      c.low >= lowerBound &&
-      c.low <= upperBound &&
-      lowerWick > bodySize * 1.5
-    );
-  });
-
-  const bounceCount = bouncesAtLevel.length;
-  const hasWickConfirmation = longWicks.length >= 2;
-
-  let optionIndex, confidence;
-  if (bounceCount >= 3 || (bounceCount >= 2 && hasWickConfirmation)) {
-    optionIndex = 3; // Starke Zone + Kaufdruck
-    confidence = Math.min(0.95, 0.7 + bounceCount * 0.08);
-  } else if (bounceCount >= 2) {
-    optionIndex = 2; // Klare Unterstuetzung
-    confidence = 0.75;
-  } else if (bounceCount === 1) {
-    optionIndex = 1; // Schwache Zone
-    confidence = 0.6;
-  } else {
-    optionIndex = 0; // Keine Unterstuetzung
-    confidence = 0.7;
-  }
-
-  const detail =
-    bounceCount > 0
-      ? `${bounceCount} Swing-Low(s) im Bereich ${lowerBound.toFixed(2)}–${upperBound.toFixed(2)}${hasWickConfirmation ? " + Docht-Signale" : ""}`
-      : `Keine Swing-Lows im ±${(tolerancePct * 100).toFixed(0)}% Bereich`;
-
-  return { optionIndex, confidence, detail, rawValue: bounceCount };
+  return atrSum / period;
 }
 
-// ══════════════════════════════════════════════════════════════
-// Q2: Volumen-Profil am Level
-// ══════════════════════════════════════════════════════════════
-
-export function analyzeVolumeProfile(candles, entryPrice, numBins = 50) {
-  if (!candles || candles.length < 20 || !entryPrice) {
-    return { optionIndex: 0, confidence: 0, detail: "Nicht genug Daten", rawValue: null };
-  }
-
-  // Preis-Range bestimmen
-  let minPrice = Infinity, maxPrice = -Infinity;
-  for (const c of candles) {
-    if (c.low < minPrice) minPrice = c.low;
-    if (c.high > maxPrice) maxPrice = c.high;
-  }
-
-  const priceRange = maxPrice - minPrice;
-  if (priceRange <= 0) {
-    return { optionIndex: 0, confidence: 0, detail: "Kein Preisbereich", rawValue: null };
-  }
-
-  const binSize = priceRange / numBins;
-
-  // Volume-by-Price Histogram aufbauen
-  const bins = new Array(numBins).fill(0);
-  for (const c of candles) {
-    const candleRange = c.high - c.low || binSize;
-    const binsSpanned = Math.max(1, Math.ceil(candleRange / binSize));
-    const volPerBin = c.volume / binsSpanned;
-
-    for (let b = 0; b < numBins; b++) {
-      const binLow = minPrice + b * binSize;
-      const binHigh = binLow + binSize;
-      // Ueberlappung pruefen
-      if (c.low <= binHigh && c.high >= binLow) {
-        bins[b] += volPerBin;
-      }
+function findSwingLows(candles, window = 2) {
+  const lows = [];
+  for (let i = window; i < candles.length - window; i++) {
+    let isLow = true;
+    for (let j = 1; j <= window; j++) {
+      if (candles[i].low > candles[i - j].low || candles[i].low > candles[i + j].low) { isLow = false; break; }
     }
+    if (isLow) lows.push({ idx: i, price: candles[i].low });
   }
-
-  // POC (Point of Control) finden
-  let pocBin = 0, maxVol = 0;
-  for (let b = 0; b < numBins; b++) {
-    if (bins[b] > maxVol) {
-      maxVol = bins[b];
-      pocBin = b;
-    }
-  }
-  const pocPrice = minPrice + (pocBin + 0.5) * binSize;
-
-  // Entry-Bin finden
-  const entryBin = Math.min(numBins - 1, Math.max(0, Math.floor((entryPrice - minPrice) / binSize)));
-  const entryVol = bins[entryBin];
-
-  // Durchschnittsvolumen berechnen
-  const avgVol = bins.reduce((s, v) => s + v, 0) / numBins;
-
-  // POC-Naehe pruefen (Entry innerhalb ±1 Bin vom POC)
-  const nearPOC = Math.abs(entryBin - pocBin) <= 1;
-
-  // Scoring
-  let optionIndex, confidence;
-  const ratio = avgVol > 0 ? entryVol / avgVol : 0;
-
-  if (nearPOC) {
-    optionIndex = 3; // POC / VPOC nahe Einstieg
-    confidence = 0.85;
-  } else if (ratio >= 1.5) {
-    optionIndex = 2; // Deutlicher Volumen-Cluster
-    confidence = 0.75;
-  } else if (ratio >= 0.8) {
-    optionIndex = 1; // Moderate Aktivitaet
-    confidence = 0.65;
-  } else {
-    optionIndex = 0; // Kaum Volumen
-    confidence = 0.7;
-  }
-
-  const detail = nearPOC
-    ? `POC bei ${pocPrice.toFixed(2)} (nahe Einstieg) · Vol-Ratio: ${ratio.toFixed(1)}x`
-    : `Vol am Level: ${ratio.toFixed(1)}x Durchschnitt · POC bei ${pocPrice.toFixed(2)}`;
-
-  return { optionIndex, confidence, detail, rawValue: Math.round(ratio * 100) / 100 };
+  return lows;
 }
 
-// ══════════════════════════════════════════════════════════════
-// Q3: Kerzen-Signal (Candlestick Pattern Detection)
-// ══════════════════════════════════════════════════════════════
+function findSwingHighs(candles, window = 2) {
+  const highs = [];
+  for (let i = window; i < candles.length - window; i++) {
+    let isHigh = true;
+    for (let j = 1; j <= window; j++) {
+      if (candles[i].high < candles[i - j].high || candles[i].high < candles[i + j].high) { isHigh = false; break; }
+    }
+    if (isHigh) highs.push({ idx: i, price: candles[i].high });
+  }
+  return highs;
+}
 
-// Eigene Pattern-Erkennung (leichtgewichtig, ohne technicalindicators-Candlestick-Modul)
+function isInsideBar(prev, curr) {
+  return curr.high <= prev.high && curr.low >= prev.low;
+}
+
 function isHammer(c) {
   const body = Math.abs(c.close - c.open);
   const lowerWick = Math.min(c.open, c.close) - c.low;
@@ -172,426 +54,340 @@ function isHammer(c) {
 }
 
 function isBullishEngulfing(prev, curr) {
-  const prevBearish = prev.close < prev.open;
-  const currBullish = curr.close > curr.open;
-  return prevBearish && currBullish && curr.open <= prev.close && curr.close >= prev.open;
+  return prev.close < prev.open && curr.close > curr.open && curr.open <= prev.close && curr.close >= prev.open;
 }
 
-function isDoji(c) {
-  const body = Math.abs(c.close - c.open);
-  const totalRange = c.high - c.low;
-  return totalRange > 0 && body / totalRange < 0.1;
-}
+// ── Hauptfunktion ──
 
-function isPinBar(c) {
-  const body = Math.abs(c.close - c.open);
-  const lowerWick = Math.min(c.open, c.close) - c.low;
-  const totalRange = c.high - c.low;
-  // Bullisher Pin Bar: langer unterer Docht, kleiner Koerper
-  return totalRange > 0 && lowerWick >= totalRange * 0.6 && body <= totalRange * 0.25;
-}
+/**
+ * Berechnet alle autoKeys fuer die Merkmalliste.
+ * @param {Array} candles - OHLCV Kerzen (mind. 30, ideal 200+)
+ * @param {number} entryPrice - Geplanter Einstiegskurs
+ * @param {Array|null} indexCandles - Leitindex-Kerzen (optional)
+ * @returns {{ [autoKey: string]: { value: boolean, confidence: number, detail: string } }}
+ */
+export function evaluateMerkmalliste(candles, entryPrice, indexCandles = null) {
+  if (!candles || candles.length < 30) return {};
 
-function isMorningStar(c1, c2, c3) {
-  // c1 = bearish, c2 = kleiner Body (Star), c3 = bullish
-  const c1Bear = c1.close < c1.open;
-  const c2Small = Math.abs(c2.close - c2.open) < Math.abs(c1.close - c1.open) * 0.3;
-  const c3Bull = c3.close > c3.open && c3.close > (c1.open + c1.close) / 2;
-  return c1Bear && c2Small && c3Bull;
-}
+  const closes = candles.map(c => c.close);
+  const currentPrice = closes[closes.length - 1];
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
 
-export function detectCandlePattern(candles) {
-  if (!candles || candles.length < 5) {
-    return { optionIndex: 0, confidence: 0, detail: "Nicht genug Kerzen", rawValue: null };
-  }
-
-  const last = candles.slice(-5);
-  const curr = last[4]; // Letzte Kerze
-  const prev = last[3]; // Vorletzte
-
-  // Pattern-Erkennung (Prioritaet: staerkstes zuerst)
-  let pattern = "none";
-  let confirmed = false;
-
-  // Pruefen ob Pattern auf vorvorletzter Kerze + Bestaetigung
-  if (isBullishEngulfing(last[2], last[3]) && curr.close > last[3].close) {
-    pattern = "engulfing";
-    confirmed = true;
-  } else if (isMorningStar(last[1], last[2], last[3]) && curr.close > last[3].close) {
-    pattern = "morningstar";
-    confirmed = true;
-  } else if (isHammer(prev) && curr.close > prev.close) {
-    pattern = "hammer";
-    confirmed = true;
-  } else if (isPinBar(prev) && curr.close > prev.close) {
-    pattern = "pinbar";
-    confirmed = true;
-  }
-  // Patterns auf letzter Kerze (noch nicht bestaetigt)
-  else if (isBullishEngulfing(prev, curr)) {
-    pattern = "engulfing";
-    confirmed = false;
-  } else if (isHammer(curr)) {
-    pattern = "hammer";
-    confirmed = false;
-  } else if (isPinBar(curr)) {
-    pattern = "pinbar";
-    confirmed = false;
-  } else if (isDoji(curr)) {
-    pattern = "doji";
-    confirmed = false;
-  }
-
-  // Scoring
-  const patternNames = {
-    none: "Keine erkennbare Formation",
-    doji: "Doji",
-    hammer: "Hammer",
-    pinbar: "Pin Bar",
-    engulfing: "Bullish Engulfing",
-    morningstar: "Morning Star",
-  };
-
-  let optionIndex, confidence;
-  if (confirmed && ["engulfing", "morningstar"].includes(pattern)) {
-    optionIndex = 3; // Formation + Folgekerze bestaetigt
-    confidence = 0.85;
-  } else if (confirmed || ["hammer", "pinbar", "engulfing"].includes(pattern)) {
-    optionIndex = 2; // Hammer / Pin Bar / Engulfing
-    confidence = confirmed ? 0.8 : 0.65;
-  } else if (pattern === "doji") {
-    optionIndex = 1; // Doji / schwache Andeutung
-    confidence = 0.6;
-  } else {
-    optionIndex = 0; // Keine Formation
-    confidence = 0.7;
-  }
-
-  const detail = pattern !== "none"
-    ? `${patternNames[pattern]}${confirmed ? " (bestaetigt durch Folgekerze)" : " (noch unbestaetigt)"}`
-    : "Keine Umkehr-Formation in den letzten 5 Kerzen";
-
-  return { optionIndex, confidence, detail, rawValue: pattern };
-}
-
-// ══════════════════════════════════════════════════════════════
-// Q4: Trend & Struktur
-// ══════════════════════════════════════════════════════════════
-
-export function analyzeTrend(candles) {
-  if (!candles || candles.length < 60) {
-    return { optionIndex: 1, confidence: 0.3, detail: "Nicht genug Daten fuer Trendanalyse", rawValue: null };
-  }
-
-  const recent = candles.slice(-60);
-
-  // Swing Highs und Lows finden (3-Bar-Fenster)
-  const swingHighs = [];
-  const swingLows = [];
-
-  for (let i = 2; i < recent.length - 2; i++) {
-    if (recent[i].high >= recent[i - 1].high && recent[i].high >= recent[i - 2].high &&
-        recent[i].high >= recent[i + 1].high && recent[i].high >= recent[i + 2].high) {
-      swingHighs.push(recent[i].high);
-    }
-    if (recent[i].low <= recent[i - 1].low && recent[i].low <= recent[i - 2].low &&
-        recent[i].low <= recent[i + 1].low && recent[i].low <= recent[i + 2].low) {
-      swingLows.push(recent[i].low);
-    }
-  }
-
-  // EMA(20) Slope als zusaetzlicher Trendindikator
-  const closes = recent.map((c) => c.close);
-  const ema20 = EMA.calculate({ values: closes, period: 20 });
-  const emaSlope =
-    ema20.length >= 10
-      ? (ema20[ema20.length - 1] - ema20[ema20.length - 10]) / ema20[ema20.length - 10]
-      : 0;
-
-  // Higher Highs / Higher Lows pruefen
-  let higherHighs = 0, lowerHighs = 0;
-  for (let i = 1; i < swingHighs.length; i++) {
-    if (swingHighs[i] > swingHighs[i - 1]) higherHighs++;
-    else lowerHighs++;
-  }
-
-  let higherLows = 0, lowerLows = 0;
-  for (let i = 1; i < swingLows.length; i++) {
-    if (swingLows[i] > swingLows[i - 1]) higherLows++;
-    else lowerLows++;
-  }
-
-  // Trend bestimmen
-  const totalSwings = Math.max(1, higherHighs + lowerHighs + higherLows + lowerLows);
-  const bullishRatio = (higherHighs + higherLows) / totalSwings;
-  const bearishRatio = (lowerHighs + lowerLows) / totalSwings;
-
-  let optionIndex, confidence, trendLabel;
-
-  if (bearishRatio > 0.7 && emaSlope < -0.02) {
-    optionIndex = 0; // Klarer Abwaertstrend
-    confidence = 0.8;
-    trendLabel = "Abwaertstrend";
-  } else if (bullishRatio < 0.4 && bearishRatio < 0.4) {
-    optionIndex = 1; // Seitwaerts
-    confidence = 0.65;
-    trendLabel = "Seitwaerts";
-  } else if (bullishRatio > 0.5 && emaSlope > 0) {
-    optionIndex = 2; // Leichter Aufwaertstrend
-    confidence = 0.7;
-    trendLabel = "leicht bullisch";
-  } else if (bullishRatio > 0.7 && emaSlope > 0.02) {
-    optionIndex = 3; // Klarer Aufwaertstrend
-    confidence = 0.85;
-    trendLabel = "klar bullisch";
-  } else if (bullishRatio > 0.5) {
-    optionIndex = 2;
-    confidence = 0.6;
-    trendLabel = "leicht bullisch";
-  } else {
-    optionIndex = 1;
-    confidence = 0.5;
-    trendLabel = "unklar";
-  }
-
-  const detail = `Trend: ${trendLabel} · HH:${higherHighs} HL:${higherLows} LH:${lowerHighs} LL:${lowerLows} · EMA-Slope: ${(emaSlope * 100).toFixed(1)}%`;
-
-  return { optionIndex, confidence, detail, rawValue: Math.round(bullishRatio * 100) };
-}
-
-// ══════════════════════════════════════════════════════════════
-// Q5: RSI & Momentum
-// ══════════════════════════════════════════════════════════════
-
-function detectBullishDivergence(candles, rsiValues) {
-  // Pruefe ob Kurs tieferes Tief macht, RSI aber hoeheres Tief (letzte 20 Bars)
-  if (rsiValues.length < 20 || candles.length < 20) return false;
-
-  const lookback = 20;
-  const recentCandles = candles.slice(-lookback);
-  const recentRSI = rsiValues.slice(-lookback);
-
-  // Tiefpunkte in Kurs und RSI finden
-  let priceLow1 = Infinity, priceLow2 = Infinity;
-  let rsiLow1 = Infinity, rsiLow2 = Infinity;
-
-  // Erstes Tief (erste Haelfte)
-  for (let i = 0; i < Math.floor(lookback / 2); i++) {
-    if (recentCandles[i].low < priceLow1) {
-      priceLow1 = recentCandles[i].low;
-      rsiLow1 = recentRSI[i];
-    }
-  }
-
-  // Zweites Tief (zweite Haelfte)
-  for (let i = Math.floor(lookback / 2); i < lookback; i++) {
-    if (recentCandles[i].low < priceLow2) {
-      priceLow2 = recentCandles[i].low;
-      rsiLow2 = recentRSI[i];
-    }
-  }
-
-  // Bullische Divergenz: Kurs macht tieferes Tief, RSI hoeheres Tief
-  return priceLow2 < priceLow1 && rsiLow2 > rsiLow1;
-}
-
-export function computeRSI(candles) {
-  if (!candles || candles.length < 30) {
-    return { optionIndex: 1, confidence: 0.3, detail: "Nicht genug Daten fuer RSI", rawValue: null };
-  }
-
-  const closes = candles.map((c) => c.close);
-  const rsiValues = RSI.calculate({ values: closes, period: 14 });
-
-  if (rsiValues.length === 0) {
-    return { optionIndex: 1, confidence: 0.3, detail: "RSI konnte nicht berechnet werden", rawValue: null };
-  }
-
-  const currentRSI = rsiValues[rsiValues.length - 1];
-  const hasDivergence = detectBullishDivergence(candles, rsiValues);
-
-  let optionIndex, confidence;
-
-  if (currentRSI < 40 && hasDivergence) {
-    optionIndex = 3; // RSI <40 + bullische Divergenz
-    confidence = 0.9;
-  } else if (currentRSI >= 30 && currentRSI <= 50) {
-    optionIndex = 2; // RSI im Kaufbereich (30–50)
-    confidence = 0.8;
-  } else if (currentRSI > 50 && currentRSI <= 70) {
-    optionIndex = 1; // RSI neutral (50–70)
-    confidence = 0.85;
-  } else {
-    // RSI > 70
-    optionIndex = 0; // RSI ueberkauft
-    confidence = 0.85;
-  }
-
-  const detail = `RSI(14) = ${currentRSI.toFixed(1)}${hasDivergence ? " + bullische Divergenz" : ""}`;
-
-  return { optionIndex, confidence, detail, rawValue: Math.round(currentRSI * 10) / 10 };
-}
-
-// ══════════════════════════════════════════════════════════════
-// Q6: EMA-Anordnung (20/50/200)
-// ══════════════════════════════════════════════════════════════
-
-export function analyzeEMAs(candles) {
-  if (!candles || candles.length < 220) {
-    return { optionIndex: 1, confidence: 0.3, detail: "Nicht genug Daten fuer EMA(200)", rawValue: null };
-  }
-
-  const closes = candles.map((c) => c.close);
+  // ── Technische Indikatoren berechnen ──
   const ema20Arr = EMA.calculate({ values: closes, period: 20 });
   const ema50Arr = EMA.calculate({ values: closes, period: 50 });
-  const ema200Arr = EMA.calculate({ values: closes, period: 200 });
-
-  if (!ema20Arr.length || !ema50Arr.length || !ema200Arr.length) {
-    return { optionIndex: 1, confidence: 0.3, detail: "EMA-Berechnung fehlgeschlagen", rawValue: null };
-  }
-
-  const ema20 = ema20Arr[ema20Arr.length - 1];
-  const ema50 = ema50Arr[ema50Arr.length - 1];
-  const ema200 = ema200Arr[ema200Arr.length - 1];
-
-  let optionIndex, confidence, label;
-
-  if (ema20 > ema50 && ema50 > ema200) {
-    optionIndex = 3; // EMA 20 > 50 > 200 (bullisch)
-    confidence = 0.9;
-    label = "EMA 20 > 50 > 200 (bullisch)";
-  } else if (ema200 > ema50 && ema50 > ema20) {
-    optionIndex = 0; // Abwaertstrend (200 > 50 > 20)
-    confidence = 0.9;
-    label = "EMA 200 > 50 > 20 (baerisch)";
-  } else {
-    // Teilweise geordnet pruefen
-    const bullishPairs = (ema20 > ema50 ? 1 : 0) + (ema50 > ema200 ? 1 : 0) + (ema20 > ema200 ? 1 : 0);
-    if (bullishPairs >= 2) {
-      optionIndex = 2; // Teilweise aufsteigend
-      confidence = 0.75;
-      label = "Teilweise bullisch";
-    } else {
-      optionIndex = 1; // Verschlungen / keine Ordnung
-      confidence = 0.7;
-      label = "Verschlungen / unklar";
-    }
-  }
-
-  const detail = `${label} · EMA20: ${ema20.toFixed(2)} | EMA50: ${ema50.toFixed(2)} | EMA200: ${ema200.toFixed(2)}`;
-
-  return { optionIndex, confidence, detail, rawValue: { ema20, ema50, ema200 } };
-}
-
-// ══════════════════════════════════════════════════════════════
-// Q8: Leitindex-Check (S&P 500 / DAX vs. 50/200-MA)
-// ══════════════════════════════════════════════════════════════
-
-export function checkLeadingIndex(indexCandles) {
-  if (!indexCandles || indexCandles.length < 220) {
-    return { optionIndex: 1, confidence: 0.3, detail: "Nicht genug Index-Daten", rawValue: null };
-  }
-
-  const closes = indexCandles.map((c) => c.close);
-  const ma50Arr = SMA.calculate({ values: closes, period: 50 });
-  const ma200Arr = SMA.calculate({ values: closes, period: 200 });
-
-  const currentPrice = closes[closes.length - 1];
-  const ma50 = ma50Arr[ma50Arr.length - 1];
-  const ma200 = ma200Arr[ma200Arr.length - 1];
-
-  let optionIndex, confidence, label;
-
-  if (currentPrice > ma50 && currentPrice > ma200) {
-    optionIndex = 3; // Ueber 50-MA UND 200-MA (Bullenmarkt)
-    confidence = 0.9;
-    label = "Ueber 50-MA & 200-MA";
-  } else if (currentPrice > ma200 && currentPrice <= ma50) {
-    optionIndex = 2; // Ueber 200-MA, nahe/unter 50-MA
-    confidence = 0.8;
-    label = "Ueber 200-MA, unter 50-MA";
-  } else if (currentPrice > ma200 || currentPrice > ma50) {
-    optionIndex = 1; // Zwischen den MAs
-    confidence = 0.75;
-    label = "Zwischen 50-MA und 200-MA";
-  } else {
-    optionIndex = 0; // Unter beiden
-    confidence = 0.85;
-    label = "Unter 50-MA & 200-MA";
-  }
-
-  const detail = `Index: ${label} · Kurs: ${currentPrice.toFixed(0)} | 50-MA: ${ma50.toFixed(0)} | 200-MA: ${ma200.toFixed(0)}`;
-
-  return { optionIndex, confidence, detail, rawValue: { price: currentPrice, ma50, ma200 } };
-}
-
-// ══════════════════════════════════════════════════════════════
-// Q9: Bollinger Baender (20,2)
-// ══════════════════════════════════════════════════════════════
-
-export function analyzeBollingerBands(candles) {
-  if (!candles || candles.length < 30) {
-    return { optionIndex: 2, confidence: 0.3, detail: "Nicht genug Daten fuer BB", rawValue: null };
-  }
-
-  const closes = candles.map((c) => c.close);
+  const sma50Arr = SMA.calculate({ values: closes, period: 50 });
+  const sma200Arr = closes.length >= 200 ? SMA.calculate({ values: closes, period: 200 }) : [];
+  const rsiArr = RSI.calculate({ values: closes, period: 14 });
   const bbArr = BollingerBands.calculate({ period: 20, stdDev: 2, values: closes });
 
-  if (bbArr.length < 6) {
-    return { optionIndex: 2, confidence: 0.3, detail: "BB-Berechnung fehlgeschlagen", rawValue: null };
-  }
+  const ema20 = ema20Arr.length > 0 ? ema20Arr[ema20Arr.length - 1] : null;
+  const ema50 = ema50Arr.length > 0 ? ema50Arr[ema50Arr.length - 1] : null;
+  const sma50 = sma50Arr.length > 0 ? sma50Arr[sma50Arr.length - 1] : null;
+  const sma200 = sma200Arr.length > 0 ? sma200Arr[sma200Arr.length - 1] : null;
+  const rsi = rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : null;
+  const bb = bbArr.length > 0 ? bbArr[bbArr.length - 1] : null;
+  const bbPrev = bbArr.length > 5 ? bbArr[bbArr.length - 6] : null;
 
-  const latest = bbArr[bbArr.length - 1];
-  const prev5 = bbArr[bbArr.length - 6];
-  const currentPrice = closes[closes.length - 1];
+  const atr = calcATR(candles);
+  const atr10ago = candles.length > 24 ? calcATR(candles.slice(0, -10)) : atr;
 
-  const { upper, middle, lower } = latest;
-  const bandwidth = upper - lower;
-  const prevBandwidth = prev5.upper - prev5.lower;
+  const swingHighs = findSwingHighs(candles.slice(-60));
+  const swingLows = findSwingLows(candles.slice(-60));
 
-  // Squeeze erkennen: aktuelle Bandbreite < 60% der Bandbreite vor 5 Bars
-  const isSqueeze = bandwidth < prevBandwidth * 0.6;
-  const isBreakingUp = isSqueeze && currentPrice > upper;
+  const recentHigh = candles.slice(-20).reduce((m, c) => Math.max(m, c.high), 0);
 
-  // Relative Position (0 = unteres Band, 1 = oberes Band)
-  const relativePos = bandwidth > 0 ? (currentPrice - lower) / bandwidth : 0.5;
+  const results = {};
 
-  // Umkehrsignal pruefen (letzte Kerze am unteren Band)
-  const lastCandle = candles[candles.length - 1];
-  const prevCandle = candles[candles.length - 2];
-  const hasReversalAtLower =
-    relativePos < 0.2 &&
-    (isHammer(lastCandle) || isBullishEngulfing(prevCandle, lastCandle));
+  // ════════════════════════════════════════════════════════
+  // TREND-PULLBACK Kriterien
+  // ════════════════════════════════════════════════════════
 
-  let optionIndex, confidence, label;
-
-  if (isBreakingUp) {
-    optionIndex = 4; // Bollinger Squeeze + Ausbruch
-    confidence = 0.85;
-    label = "Squeeze + Ausbruch nach oben";
-  } else if (hasReversalAtLower) {
-    optionIndex = 3; // Am unteren Band + Umkehrsignal
-    confidence = 0.8;
-    label = "Am unteren Band + Umkehrsignal";
-  } else if (currentPrice < lower) {
-    optionIndex = 0; // Weit unter unterem Band
-    confidence = 0.8;
-    label = "Unter unterem Band (ueberverkauft)";
-  } else if (relativePos < 0.25) {
-    optionIndex = 1; // Nahe unterem Band, innerhalb
-    confidence = 0.7;
-    label = "Nahe unterem Band";
-  } else {
-    optionIndex = 2; // Mittig
-    confidence = 0.65;
-    label = "Mittig zwischen den Baendern";
-  }
-
-  const detail = `${label} · Kurs: ${currentPrice.toFixed(2)} | BB: ${lower.toFixed(2)} – ${middle.toFixed(2)} – ${upper.toFixed(2)}${isSqueeze ? " | SQUEEZE" : ""}`;
-
-  return {
-    optionIndex,
-    confidence,
-    detail,
-    rawValue: { price: currentPrice, upper, middle, lower, relativePos: Math.round(relativePos * 100) },
+  // aboveSMA50: Kurs > SMA50
+  results.aboveSMA50 = {
+    value: sma50 != null && currentPrice > sma50,
+    confidence: sma50 != null ? 0.95 : 0.3,
+    detail: sma50 != null ? `Kurs ${currentPrice.toFixed(2)} ${currentPrice > sma50 ? ">" : "<"} SMA50 ${sma50.toFixed(2)}` : "SMA50 nicht verfuegbar",
   };
+
+  // aboveSMA200: Kurs > SMA200
+  results.aboveSMA200 = {
+    value: sma200 != null && currentPrice > sma200,
+    confidence: sma200 != null ? 0.95 : 0.3,
+    detail: sma200 != null ? `Kurs ${currentPrice.toFixed(2)} ${currentPrice > sma200 ? ">" : "<"} SMA200 ${sma200.toFixed(2)}` : "SMA200 nicht verfuegbar (< 200 Kerzen)",
+  };
+
+  // pullbackRange: Pullback 0.5-1.5 ATR vom Hoch
+  const pullbackATR = atr > 0 ? (recentHigh - currentPrice) / atr : 0;
+  results.pullbackRange = {
+    value: pullbackATR >= 0.5 && pullbackATR <= 1.5,
+    confidence: atr > 0 ? 0.85 : 0.3,
+    detail: `Pullback ${pullbackATR.toFixed(2)} ATR vom 20-Tage-Hoch (ideal: 0.5–1.5)`,
+  };
+
+  // nearEMA20: Nahe EMA20 (innerhalb 2%)
+  const distToEma20 = ema20 ? Math.abs(currentPrice - ema20) / ema20 * 100 : 99;
+  results.nearEMA20 = {
+    value: distToEma20 < 2,
+    confidence: ema20 ? 0.9 : 0.3,
+    detail: ema20 ? `Abstand zu EMA20: ${distToEma20.toFixed(1)}% (${currentPrice > ema20 ? "darueber" : "darunter"})` : "EMA20 nicht verfuegbar",
+  };
+
+  // insideBar: Letzte Kerze innerhalb der vorherigen
+  results.insideBar = {
+    value: isInsideBar(prev, last),
+    confidence: 0.95,
+    detail: isInsideBar(prev, last) ? "Inside Bar erkannt (Konsolidierung)" : "Kein Inside Bar",
+  };
+
+  // higherLow: Letztes Swing-Low hoeher als vorletztes
+  const recentSwingLows = swingLows.slice(-3);
+  const hasHigherLow = recentSwingLows.length >= 2 && recentSwingLows[recentSwingLows.length - 1].price > recentSwingLows[recentSwingLows.length - 2].price;
+  results.higherLow = {
+    value: hasHigherLow,
+    confidence: recentSwingLows.length >= 2 ? 0.85 : 0.4,
+    detail: hasHigherLow ? "Hoeheres Tief bestätigt" : (recentSwingLows.length < 2 ? "Nicht genug Swing-Tiefs" : "Kein hoeheres Tief"),
+  };
+
+  // ema20Reclaim: Kurs hat EMA20 von unten durchbrochen in letzten 3 Bars
+  let ema20Reclaim = false;
+  if (ema20Arr.length >= 4) {
+    for (let i = ema20Arr.length - 3; i < ema20Arr.length; i++) {
+      const candleIdx = closes.length - ema20Arr.length + i;
+      const prevIdx = candleIdx - 1;
+      if (candleIdx > 0 && prevIdx >= 0) {
+        const emaVal = ema20Arr[i];
+        const emaPrev = ema20Arr[i - 1];
+        if (closes[prevIdx] < emaPrev && closes[candleIdx] > emaVal) ema20Reclaim = true;
+      }
+    }
+  }
+  results.ema20Reclaim = {
+    value: ema20Reclaim,
+    confidence: ema20Arr.length >= 4 ? 0.85 : 0.3,
+    detail: ema20Reclaim ? "EMA20 von unten durchbrochen" : "Kein EMA20-Reclaim in letzten 3 Kerzen",
+  };
+
+  // breakPullbackHigh: Bruch des Pullback-Hochs (letzte Kerze bricht Hoch der letzten 3)
+  const prev3High = Math.max(...candles.slice(-4, -1).map(c => c.high));
+  results.breakPullbackHigh = {
+    value: last.close > prev3High,
+    confidence: 0.85,
+    detail: last.close > prev3High ? `Close ${last.close.toFixed(2)} > Pullback-Hoch ${prev3High.toFixed(2)}` : `Close ${last.close.toFixed(2)} noch unter Pullback-Hoch ${prev3High.toFixed(2)}`,
+  };
+
+  // ════════════════════════════════════════════════════════
+  // BREAKOUT Kriterien
+  // ════════════════════════════════════════════════════════
+
+  // multipleTests: Mehrere Tests am Widerstand (mind. 2 Swing-Highs in aehnlichem Bereich)
+  const recentSwingHighs = swingHighs.slice(-5);
+  let testsNearResistance = 0;
+  if (recentSwingHighs.length >= 2) {
+    const topHigh = Math.max(...recentSwingHighs.map(h => h.price));
+    const tolerance = topHigh * 0.02;
+    testsNearResistance = recentSwingHighs.filter(h => h.price >= topHigh - tolerance).length;
+  }
+  results.multipleTests = {
+    value: testsNearResistance >= 2,
+    confidence: recentSwingHighs.length >= 2 ? 0.8 : 0.3,
+    detail: `${testsNearResistance} Tests nahe Widerstand erkannt`,
+  };
+
+  // compressionNearHigh: BB Squeeze oder Kurs nahe Hoch
+  const isSqueeze = bb && bbPrev && (bb.upper - bb.lower) < (bbPrev.upper - bbPrev.lower) * 0.6;
+  const nearHigh = recentHigh > 0 && (recentHigh - currentPrice) / recentHigh < 0.03;
+  results.compressionNearHigh = {
+    value: isSqueeze || nearHigh,
+    confidence: bb ? 0.85 : 0.4,
+    detail: isSqueeze ? "Bollinger Squeeze erkannt" : nearHigh ? "Kurs nahe 20-Tage-Hoch (< 3%)" : "Keine Kompression",
+  };
+
+  // higherLows (fuer Breakout): Aufsteigende Tiefs in letzten Swing-Lows
+  const last3Lows = swingLows.slice(-3);
+  const ascendingLows = last3Lows.length >= 2 && last3Lows.every((l, i) => i === 0 || l.price >= last3Lows[i - 1].price);
+  results.higherLows = {
+    value: ascendingLows,
+    confidence: last3Lows.length >= 2 ? 0.8 : 0.3,
+    detail: ascendingLows ? "Aufsteigende Tiefs bestaetigt" : "Keine aufsteigenden Tiefs",
+  };
+
+  // bigGreenCandle: Letzte Kerze ist grosse gruene Kerze (Body > 1.5x Durchschnitts-Body)
+  const avgBody = candles.slice(-20).reduce((s, c) => s + Math.abs(c.close - c.open), 0) / 20;
+  const lastBody = last.close - last.open;
+  const isBigGreen = lastBody > 0 && lastBody > avgBody * 1.5;
+  results.bigGreenCandle = {
+    value: isBigGreen,
+    confidence: 0.9,
+    detail: isBigGreen ? `Grosse gruene Kerze (Body ${lastBody.toFixed(2)} > ${(avgBody * 1.5).toFixed(2)} Schwelle)` : "Keine grosse gruene Kerze",
+  };
+
+  // closeNearDayHigh: Close > 90% der Tagesrange
+  const dayRange = last.high - last.low;
+  const closeRelative = dayRange > 0 ? (last.close - last.low) / dayRange : 0.5;
+  results.closeNearDayHigh = {
+    value: closeRelative > 0.9,
+    confidence: 0.95,
+    detail: `Close bei ${(closeRelative * 100).toFixed(0)}% der Tagesrange`,
+  };
+
+  // atrIncreasing: ATR nimmt zu (aktuell > 10 Bars ago)
+  results.atrIncreasing = {
+    value: atr > atr10ago * 1.1,
+    confidence: 0.8,
+    detail: `ATR aktuell ${atr.toFixed(2)} vs. ${atr10ago.toFixed(2)} vor 10 Bars`,
+  };
+
+  // ════════════════════════════════════════════════════════
+  // RANGE Kriterien
+  // ════════════════════════════════════════════════════════
+
+  // flatSMAs: SMA50/SMA200 Spread < 1.5%
+  const smaSpread = sma50 && sma200 ? Math.abs(sma50 - sma200) / sma200 * 100 : (sma50 && ema50 ? Math.abs(sma50 - ema50) / ema50 * 100 : 99);
+  results.flatSMAs = {
+    value: smaSpread < 1.5,
+    confidence: sma50 ? 0.85 : 0.3,
+    detail: `SMA-Spread: ${smaSpread.toFixed(1)}% (flach < 1.5%)`,
+  };
+
+  // directionChanges: Viele Farbwechsel in letzten 20 Kerzen (>10 = Range)
+  let dirChanges = 0;
+  const recent20 = candles.slice(-20);
+  for (let i = 1; i < recent20.length; i++) {
+    const prevGreen = recent20[i - 1].close > recent20[i - 1].open;
+    const currGreen = recent20[i].close > recent20[i].open;
+    if (prevGreen !== currGreen) dirChanges++;
+  }
+  results.directionChanges = {
+    value: dirChanges >= 10,
+    confidence: 0.85,
+    detail: `${dirChanges} Farbwechsel in 20 Kerzen (Range-typisch >= 10)`,
+  };
+
+  // lowATR: ATR ist niedrig (unter 50% des 60-Tage-Durchschnitts)
+  const atr60 = candles.length >= 74 ? calcATR(candles.slice(-74), 60) : atr;
+  results.lowATR = {
+    value: atr < atr60 * 0.7,
+    confidence: 0.8,
+    detail: `ATR ${atr.toFixed(2)} vs. 60-Tage-ATR ${atr60.toFixed(2)}`,
+  };
+
+  // wicksAtEdges: Lange Dochte an Range-Raendern (mind. 3 in 20 Kerzen)
+  const rangeHigh = Math.max(...recent20.map(c => c.high));
+  const rangeLow = Math.min(...recent20.map(c => c.low));
+  const rangeSize = rangeHigh - rangeLow;
+  let wickCount = 0;
+  if (rangeSize > 0) {
+    for (const c of recent20) {
+      const upperWick = c.high - Math.max(c.open, c.close);
+      const lowerWick = Math.min(c.open, c.close) - c.low;
+      const body = Math.abs(c.close - c.open);
+      if ((c.high > rangeHigh - rangeSize * 0.15 && upperWick > body) || (c.low < rangeLow + rangeSize * 0.15 && lowerWick > body)) {
+        wickCount++;
+      }
+    }
+  }
+  results.wicksAtEdges = {
+    value: wickCount >= 3,
+    confidence: 0.8,
+    detail: `${wickCount} Docht-Abweisungen an Range-Raendern`,
+  };
+
+  // alternatingColors: Wechselnde Kerzenfarben (> 60% der Kerzen wechseln)
+  results.alternatingColors = {
+    value: dirChanges / Math.max(1, recent20.length - 1) > 0.6,
+    confidence: 0.85,
+    detail: `Farbwechsel-Rate: ${((dirChanges / Math.max(1, recent20.length - 1)) * 100).toFixed(0)}%`,
+  };
+
+  // nearSupport: Kurs nahe Unterstuetzung (unteres Drittel der Range)
+  const nearSupportRange = rangeSize > 0 && (currentPrice - rangeLow) / rangeSize < 0.35;
+  results.nearSupport = {
+    value: nearSupportRange,
+    confidence: rangeSize > 0 ? 0.85 : 0.3,
+    detail: nearSupportRange ? `Kurs im unteren Drittel der Range` : `Kurs bei ${rangeSize > 0 ? ((currentPrice - rangeLow) / rangeSize * 100).toFixed(0) : "?"}% der Range`,
+  };
+
+  // ════════════════════════════════════════════════════════
+  // BOUNCE Kriterien
+  // ════════════════════════════════════════════════════════
+
+  // bigDrop: Drop >= 3 ATR vom 20-Tage-Hoch
+  results.bigDrop = {
+    value: pullbackATR >= 3,
+    confidence: atr > 0 ? 0.9 : 0.3,
+    detail: `Drop: ${pullbackATR.toFixed(1)} ATR vom Hoch (Bounce-typisch >= 3)`,
+  };
+
+  // farBelowEMAs: Kurs weit unter EMA20 und EMA50 (>3%)
+  const distEma20Pct = ema20 ? (ema20 - currentPrice) / ema20 * 100 : 0;
+  const distEma50Pct = ema50 ? (ema50 - currentPrice) / ema50 * 100 : 0;
+  results.farBelowEMAs = {
+    value: distEma20Pct > 3 && distEma50Pct > 3,
+    confidence: ema20 && ema50 ? 0.9 : 0.3,
+    detail: `Unter EMA20: ${distEma20Pct.toFixed(1)}%, unter EMA50: ${distEma50Pct.toFixed(1)}%`,
+  };
+
+  // atrRising: ATR stark steigend (Panik-Volatilitaet)
+  results.atrRising = {
+    value: atr > atr10ago * 1.5,
+    confidence: 0.8,
+    detail: `ATR-Anstieg: ${atr.toFixed(2)} vs. ${atr10ago.toFixed(2)} (${((atr / Math.max(atr10ago, 0.01) - 1) * 100).toFixed(0)}%)`,
+  };
+
+  // bigRedCandles: Mehrere grosse rote Kerzen in letzten 5 Kerzen
+  const last5 = candles.slice(-5);
+  const bigReds = last5.filter(c => c.close < c.open && Math.abs(c.close - c.open) > avgBody * 1.5).length;
+  results.bigRedCandles = {
+    value: bigReds >= 2,
+    confidence: 0.85,
+    detail: `${bigReds} grosse rote Kerzen in letzten 5 Kerzen`,
+  };
+
+  // longLowerWicks: Lange untere Dochte in letzten 3 Kerzen (Docht > 2x Body)
+  const last3 = candles.slice(-3);
+  const longWickCount = last3.filter(c => {
+    const body = Math.abs(c.close - c.open) || 0.01;
+    const lowerWick = Math.min(c.open, c.close) - c.low;
+    return lowerWick > body * 2;
+  }).length;
+  results.longLowerWicks = {
+    value: longWickCount >= 1,
+    confidence: 0.9,
+    detail: `${longWickCount} Kerze(n) mit langem unteren Docht in letzten 3`,
+  };
+
+  // firstGreenReversal: Erste gruene Kerze nach mind. 3 roten
+  let consecReds = 0;
+  for (let i = candles.length - 2; i >= Math.max(0, candles.length - 6); i--) {
+    if (candles[i].close < candles[i].open) consecReds++;
+    else break;
+  }
+  const isFirstGreen = last.close > last.open && consecReds >= 3;
+  results.firstGreenReversal = {
+    value: isFirstGreen,
+    confidence: 0.9,
+    detail: isFirstGreen ? `Erste gruene Kerze nach ${consecReds} roten` : `${consecReds} aufeinanderfolgende rote Kerzen`,
+  };
+
+  // ════════════════════════════════════════════════════════
+  // Leitindex (falls verfuegbar)
+  // ════════════════════════════════════════════════════════
+
+  if (indexCandles && indexCandles.length >= 200) {
+    const idxCloses = indexCandles.map(c => c.close);
+    const idxSma50 = SMA.calculate({ values: idxCloses, period: 50 });
+    const idxSma200 = SMA.calculate({ values: idxCloses, period: 200 });
+    const idxPrice = idxCloses[idxCloses.length - 1];
+    const ma50 = idxSma50[idxSma50.length - 1];
+    const ma200 = idxSma200[idxSma200.length - 1];
+    results.indexAboveMAs = {
+      value: idxPrice > ma50 && idxPrice > ma200,
+      confidence: 0.9,
+      detail: `Index: ${idxPrice.toFixed(0)} | 50-MA: ${ma50.toFixed(0)} | 200-MA: ${ma200.toFixed(0)}`,
+    };
+  }
+
+  return results;
 }

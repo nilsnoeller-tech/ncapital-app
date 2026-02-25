@@ -10,4 +10,8 @@ binding = "NCAPITAL_KV"
 id = "e3bd78d6bea04ccfb89c71d699046b6c"
 
 [triggers]
-crons = ["*/5 7-22 * * 1-5"]
+crons = ["*/2 7-22 * * 1-5"]
+
+# Secrets (set via `npx wrangler secret put`):
+# TELEGRAM_BOT_TOKEN  — Bot-Token from @BotFather
+# TELEGRAM_CHAT_ID    — Target chat ID for briefing messages

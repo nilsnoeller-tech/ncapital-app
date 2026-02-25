@@ -213,8 +213,8 @@ const RECURRING_EVENTS_2026 = [
 const SCAN_DEFAULTS = {
   chunkSize: 24,         // Symbols per chunk (24 × 2 calls = 48 fetches, under 50 subrequest limit)
   parallelBatch: 6,      // Parallel fetches per batch
-  threshold: 75,         // Minimum combined score to show in results
-  notifyThreshold: 80,   // Minimum combined score to trigger push notification
+  threshold: 78,         // Minimum combined score to show in results (Merkmalliste v2)
+  notifyThreshold: 83,   // Minimum combined score to trigger push notification
 };
 
 // ─── Constants & CORS ───
@@ -600,34 +600,73 @@ function calcOBV(candles) {
 // ─── Setup-Typen mit Qualifying Conditions & Gewichten ───
 
 const SETUP_TYPES = {
-  TREND_FOLLOW: {
-    key: "trend_follow", label: "Trend Follow", emoji: "\ud83d\ude80",
-    subtitle: "Der Momentum-Ritt",
-    desc: "Kauf relativer Staerke. Kein Ruecksetzer abwarten, auf den fahrenden Zug aufspringen. Hoher RSI = Staerke, nicht ueberkauft. Outperformance kritisch.",
-    qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi > 50 && i.fibLevel <= 0.35 && i.priceAboveEma20 &&
-      (i.adxVal >= 20 || (i.macdAboveZero && i.perf20d > 0 && i.perf5d > 0)),
-    weights: { Trend: 0.25, Momentum: 0.20, "Rel.Staerke": 0.15, Volumen: 0.15, Support: 0.10, Volatilitaet: 0.10, Pullback: 0.05 },
-  },
-  PULLBACK: {
-    key: "pullback", label: "Pullback", emoji: "\ud83c\udfaf",
-    subtitle: "Der Ruecksetzer im Trend",
-    desc: "Klassisches Dip-Buying. Trend aufwaerts intakt, Aktie macht Atempause. A-Grade = Konfluenz aus RSI + Fib + EMA.",
-    qualify: (i) => (i.isBullishEMA || i.isPartialBullish) && i.rsi >= 30 && i.rsi <= 58 && i.fibLevel >= 0.15 && i.fibLevel <= 0.60 && (i.priceAboveEma20 || i.distToEma20 < 3),
-    weights: { Pullback: 0.25, Support: 0.20, Trend: 0.15, Volumen: 0.15, Momentum: 0.10, "Rel.Staerke": 0.10, Volatilitaet: 0.05 },
-  },
-  MEAN_REVERSION: {
-    key: "mean_reversion", label: "Mean Reversion", emoji: "\ud83d\udd04",
-    subtitle: "Die Uebertreibung",
-    desc: "Antizyklisch: Preis zu weit vom Mittelwert abgewichen (Gummiband). Snap-Back zum EMA 20. Bearishe Phasen = beste Chancen.",
-    qualify: (i) => i.rsi < 35 || (i.bbRelPos !== null && i.bbRelPos < 0.15) || i.fibLevel >= 0.55,
-    weights: { Momentum: 0.25, Pullback: 0.20, Volumen: 0.15, Volatilitaet: 0.15, Support: 0.10, Trend: 0.10, "Rel.Staerke": 0.05 },
+  TREND_PULLBACK: {
+    key: "trend_pullback", label: "Trend-Pullback", emoji: "\ud83c\udfaf",
+    subtitle: "Ruecksetzer im Aufwaertstrend",
+    desc: "Kurs ueber SMA50/200 (Trend intakt). Ruecksetzer Richtung EMA20 oder letztes Tief. Pullback 0.5-1.5 ATR vom Hoch.",
+    qualify: (i) => {
+      const aboveSMA50 = i.currentPrice > i.sma50;
+      const aboveSMA200 = i.sma200 ? i.currentPrice > i.sma200 : true;
+      const trendIntakt = aboveSMA50 && aboveSMA200;
+      const pullbackATR = i.pullbackATR;
+      const inPullbackRange = pullbackATR >= 0.5 && pullbackATR <= 2.0;
+      const nearEMA20 = i.distToEma20 < 3;
+      return trendIntakt && (inPullbackRange || nearEMA20) && !i.isBearishEMA;
+    },
+    invalidate: (i) => {
+      const underSMA50 = i.currentPrice < i.sma50;
+      const tooFarBelow = !i.priceAboveEma20 && i.atrLast > 0 && (i.e20 - i.currentPrice) > i.atrLast * 2;
+      return underSMA50 || tooFarBelow;
+    },
+    weights: { Trend: 0.25, Pullback: 0.25, Support: 0.15, Volumen: 0.10, Momentum: 0.10, "Rel.Staerke": 0.10, Volatilitaet: 0.05 },
   },
   BREAKOUT: {
     key: "breakout", label: "Breakout", emoji: "\u26a1",
-    subtitle: "Die Explosion",
-    desc: "Wie eine Feder zusammengedrueckt (BB Squeeze). Ausbruch NUR mit Vol-Surge gueltig. Ohne Volumen = Fakeout.",
-    qualify: (i) => i.bbSqueeze === true && i.rsi >= 40 && i.rsi <= 70 && !i.isBearishEMA,
+    subtitle: "Ausbruch ueber Widerstand",
+    desc: "Mehrere Tests am Widerstand, Seitwaerts nahe Hoch (Kompression), hoehere Tiefs. Grosse gruene Kerze ueber Widerstand.",
+    qualify: (i) => {
+      const compression = i.bbSqueeze || (i.fibLevel >= 0 && i.fibLevel <= 0.15);
+      const momentumOK = i.rsi >= 45 && i.rsi <= 72;
+      const structure = i.hhhl || (i.isPartialBullish && i.rsi >= 50);
+      return (compression || structure) && momentumOK && !i.isBearishEMA;
+    },
+    invalidate: (i) => {
+      return i.fibLevel > 0.30 && !i.priceAboveEma20;
+    },
     weights: { Volatilitaet: 0.25, Volumen: 0.25, Momentum: 0.20, Trend: 0.15, "Rel.Staerke": 0.10, Support: 0.05, Pullback: 0.00 },
+  },
+  RANGE: {
+    key: "range", label: "Range", emoji: "\u2194\ufe0f",
+    subtitle: "Seitwaertsphase",
+    desc: "Flache SMA50/200, mehrere Richtungswechsel, ATR niedrig. Entry nahe Unterstuetzung.",
+    qualify: (i) => {
+      const flatSMAs = Math.abs(i.e20 - i.e50) / (i.e50 || 1) < 0.015;
+      const notTrending = i.adxVal < 25;
+      const lowATR = i.atrLast < i.currentPrice * 0.015;
+      const neutralRSI = i.rsi >= 35 && i.rsi <= 65;
+      return (flatSMAs || notTrending || lowATR) && neutralRSI;
+    },
+    invalidate: (i) => {
+      return i.adxVal >= 30 && (i.isBullishEMA || i.isBearishEMA);
+    },
+    weights: { Support: 0.25, Volatilitaet: 0.20, Pullback: 0.20, Volumen: 0.15, Momentum: 0.10, Trend: 0.05, "Rel.Staerke": 0.05 },
+  },
+  BOUNCE: {
+    key: "bounce", label: "Bounce", emoji: "\ud83d\udd04",
+    subtitle: "Kapitulation / Uebertreibung",
+    desc: "Drop >= 3 ATR vom Hoch, weit unter EMA20/50, ATR stark steigend. Grosse rote Kerzen, erste gruene Umkehrkerze.",
+    qualify: (i) => {
+      const bigDrop = i.pullbackATR >= 3;
+      const belowEMAs = !i.priceAboveEma20 && i.distToEma20 > 3 && i.currentPrice < i.e50;
+      const oversold = i.rsi < 35;
+      const bbExtreme = i.bbRelPos !== null && i.bbRelPos < 0.15;
+      return (bigDrop || belowEMAs) && (oversold || bbExtreme);
+    },
+    invalidate: (i) => {
+      // Neues Tief nach Bounceversuch — pruefe ob letzte Kerze neues Low macht nach gruener Kerze
+      return i.newLowAfterBounce === true;
+    },
+    weights: { Momentum: 0.25, Pullback: 0.20, Volumen: 0.20, Volatilitaet: 0.15, Support: 0.10, Trend: 0.05, "Rel.Staerke": 0.05 },
   },
 };
 const SETUP_GENERAL = {
@@ -831,6 +870,83 @@ function extractIndicators(candles) {
   if (emaSupport) confluence++;
   if (atDeepFib) confluence++;
 
+  // ─── Merkmalliste v2: Zusaetzliche Indikatoren ───
+
+  // SMA50/SMA200 (echt, nicht EMA)
+  const sma50arr = calcSMA(closes, 50);
+  const sma200arr = closes.length >= 200 ? calcSMA(closes, 200) : [];
+  const sma50 = sma50arr.length > 0 ? sma50arr[sma50arr.length - 1] : e50;
+  const sma200 = sma200arr.length > 0 ? sma200arr[sma200arr.length - 1] : e200;
+
+  // Pullback-Tiefe in ATR-Einheiten
+  const pullbackATR = atrLast > 0 && fibHigh > currentPrice ? (fibHigh - currentPrice) / atrLast : 0;
+
+  // ATR-Trend: aktuelle ATR vs 10 Bars ago → "ATR stark steigend" fuer Bounce
+  let atrTrend = 0;
+  if (atrArr.length >= 11) {
+    const atrNow = atrArr[atrArr.length - 1];
+    const atr10ago = atrArr[atrArr.length - 11];
+    atrTrend = atr10ago > 0 ? (atrNow - atr10ago) / atr10ago : 0;
+  }
+
+  // Inside Bar: letzte Kerze komplett innerhalb der vorherigen
+  const lastC = candles[candles.length - 1];
+  const prevC = candles[candles.length - 2];
+  const insideBar = lastC && prevC && lastC.high <= prevC.high && lastC.low >= prevC.low;
+
+  // Higher Low: letztes Swing-Low hoeher als vorletztes
+  const higherLow = swingLows.length >= 2 && swingLows[swingLows.length - 1] > swingLows[swingLows.length - 2];
+
+  // EMA20 Reclaim: Kurs hat EMA20 von unten nach oben durchbrochen in letzten 3 Bars
+  let ema20Reclaim = false;
+  if (ema20.length >= 3 && closes.length >= 3) {
+    for (let i = closes.length - 3; i < closes.length; i++) {
+      const eIdx = i - (closes.length - ema20.length);
+      if (eIdx >= 1 && eIdx < ema20.length) {
+        if (closes[i - 1] < ema20[eIdx - 1] && closes[i] > ema20[eIdx]) { ema20Reclaim = true; break; }
+      }
+    }
+  }
+
+  // Close nahe Tageshoch (Close > 90% der Tagesrange)
+  const dayRange = lastC ? lastC.high - lastC.low : 0;
+  const closeNearDayHigh = dayRange > 0 && lastC ? (lastC.close - lastC.low) / dayRange > 0.90 : false;
+
+  // Lange untere Dochte in letzten 3 Kerzen
+  const last3Candles = candles.slice(-3);
+  const longLowerWicks = last3Candles.filter(c => {
+    const body = Math.abs(c.close - c.open);
+    const lowerWick = Math.min(c.open, c.close) - c.low;
+    return body > 0 && lowerWick > body * 2;
+  }).length >= 2;
+
+  // Erste gruene Umkehrkerze nach >= 3 roten
+  let firstGreenReversal = false;
+  if (candles.length >= 5) {
+    const recent = candles.slice(-5);
+    const redCount = recent.slice(0, 4).filter(c => c.close < c.open).length;
+    const lastGreen = recent[4].close > recent[4].open;
+    if (redCount >= 3 && lastGreen) firstGreenReversal = true;
+  }
+
+  // Richtungswechsel in letzten 20 Kerzen (fuer Range-Erkennung)
+  let directionChanges = 0;
+  const dc20 = candles.slice(-20);
+  for (let i = 1; i < dc20.length; i++) {
+    const prevGreen = dc20[i - 1].close >= dc20[i - 1].open;
+    const currGreen = dc20[i].close >= dc20[i].open;
+    if (prevGreen !== currGreen) directionChanges++;
+  }
+
+  // Neues Tief nach Bounce-Versuch (fuer Bounce-Invalidierung)
+  let newLowAfterBounce = false;
+  if (candles.length >= 5) {
+    const r5 = candles.slice(-5);
+    const hadGreen = r5.slice(0, 4).some(c => c.close > c.open);
+    const newLow = r5[4].low < Math.min(...r5.slice(0, 4).map(c => c.low));
+    if (hadGreen && newLow) newLowAfterBounce = true;
+  }
+
   return {
     candles, closes, currentPrice, rsi, rsiValues, adxVal,
     e20, e50, e200, isBullishEMA, isPartialBullish, isBearishEMA,
@@ -846,10 +962,14 @@ function extractIndicators(candles) {
     perf5d, perf20d, perf50d,
     bbSqueeze, bbRelPos, bbBandwidth,
     bounceCount, nearEma20, nearEma50, nearEma200, emaSupport, confluence,
+    // Merkmalliste v2
+    sma50, sma200, pullbackATR, atrTrend, insideBar, higherLow,
+    ema20Reclaim, closeNearDayHigh, longLowerWicks, firstGreenReversal,
+    directionChanges, newLowAfterBounce,
   };
 }
 
-// Phase 2: Setup-spezifisches Scoring pro Faktor
+// Phase 2: Setup-spezifisches Scoring pro Faktor (Merkmalliste v2)
 function scoreForSetup(ind, setupKey) {
   const factors = [];
   const signals = [];
@@ -858,7 +978,6 @@ function scoreForSetup(ind, setupKey) {
   // ═══ F1: TREND ═══
   let ts = 20;
   const { isStrongTrend, isBullishEMA, hhhl, isTrending, isPartialBullish, isBearishEMA, adxVal } = ind;
-  // Basis-Tier (gleich fuer alle, dann setup-spezifisch anpassen)
   const trendTier = isStrongTrend && isBullishEMA && hhhl ? 7
     : isStrongTrend && isBullishEMA ? 6
     : isTrending && isBullishEMA ? 5
@@ -867,18 +986,30 @@ function scoreForSetup(ind, setupKey) {
     : !isTrending && isPartialBullish ? 2
     : isBearishEMA ? 1 : 0;
 
-  if (S === "TREND_FOLLOW") {
-    ts = [10, 0, 20, 50, 55, 85, 95, 100][trendTier];
-    if (trendTier >= 6) signals.push(`Trend ADX ${adxVal.toFixed(0)}${hhhl ? ", HH/HL" : ""}`);
-  } else if (S === "PULLBACK") {
-    ts = [20, 5, 40, 55, 60, 70, 80, 85][trendTier];
-    if (trendTier >= 5) signals.push(`Aufwaertstrend (ADX ${adxVal.toFixed(0)})`);
-  } else if (S === "MEAN_REVERSION") {
-    // Bearish = Chance fuer Reversal, Bullish = weniger Reversal-Potential
-    ts = [35, 60, 40, 30, 30, 25, 20, 15][trendTier];
-    if (trendTier === 1) signals.push("Bearischer Trend (Reversal-Potential)");
+  if (S === "TREND_PULLBACK") {
+    // Trend MUSS intakt sein: Kurs > SMA50/200
+    const aboveSMA = ind.currentPrice > ind.sma50 && (ind.sma200 ? ind.currentPrice > ind.sma200 : true);
+    if (aboveSMA && trendTier >= 6) { ts = 100; signals.push(`Trend intakt: ADX ${adxVal.toFixed(0)}${hhhl ? ", HH/HL" : ""}`); }
+    else if (aboveSMA && trendTier >= 5) { ts = 90; }
+    else if (aboveSMA && trendTier >= 4) { ts = 75; }
+    else if (aboveSMA) { ts = 60; }
+    else if (trendTier >= 4) { ts = 40; }
+    else ts = 10;
   } else if (S === "BREAKOUT") {
+    // Aufbauend, noch nicht voller Trend
     ts = [25, 10, 35, 45, 50, 65, 70, 75][trendTier];
+    if (ind.closeNearDayHigh) { ts = Math.min(100, ts + 10); }
+  } else if (S === "RANGE") {
+    // INVERTIERT: Niedriger ADX = GUT fuer Range
+    if (adxVal < 15) { ts = 90; signals.push(`Range: ADX ${adxVal.toFixed(0)} (flach)`); }
+    else if (adxVal < 20) { ts = 70; }
+    else if (adxVal < 25) { ts = 50; }
+    else if (adxVal < 30) { ts = 30; }
+    else ts = 10; // Starker Trend = schlecht fuer Range
+  } else if (S === "BOUNCE") {
+    // Bearish = Chance fuer Reversal
+    ts = [35, 60, 40, 30, 30, 25, 20, 15][trendTier];
+    if (trendTier <= 1) signals.push("Bearischer Trend (Reversal-Potential)");
   } else { // GENERAL
     ts = [20, 5, 40, 55, 60, 80, 90, 100][trendTier];
     if (trendTier >= 6) signals.push(`Trend ADX ${adxVal.toFixed(0)}${hhhl ? ", HH/HL" : ""}`);
@@ -890,50 +1021,52 @@ function scoreForSetup(ind, setupKey) {
   const { rsi, fibLevel, atFibZone, atFib236, atFib382, atFib50, atFib618, priceNearEma } = ind;
   const fibName = atFib236 ? "23.6%" : atFib382 ? "38.2%" : atFib50 ? "50%" : atFib618 ? "61.8%" : ind.atFib786 ? "78.6%" : "";
 
-  if (S === "TREND_FOLLOW") {
-    // Momentum-Ritt: Hoher RSI = Staerke, nicht ueberkauft. Nahe am Hoch = ideal.
-    if (rsi >= 55 && rsi <= 70) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} Trend-Momentum`); }
-    else if (rsi >= 50 && rsi < 55) ps = 70;
-    else if (rsi > 70) { ps = 50; } // Ueberkauft, aber Trend = ok
-    else if (rsi >= 40 && rsi < 50) ps = 30;
-    else ps = 10; // RSI < 40 = Trend gebrochen
-    // Nahe am Hoch (Fib < 10%) = fahrender Zug, Bonus
-    if (fibLevel >= 0 && fibLevel < 0.10) { ps = Math.min(100, ps + 10); if (rsi >= 55) signals.push("Nahe am Hoch (Fib <10%)"); }
-  } else if (S === "PULLBACK") {
-    // Der Ruecksetzer im Trend: RSI 35-58 ideal, Fib-Zone + EMA-Naehe VON OBEN = A-Grade
-    const nearEmaOben = ind.priceNearEmaAbove; // nahe EMA von oben = Support hielt
-    if (rsi >= 35 && rsi <= 55 && atFibZone && nearEmaOben) { ps = 100; signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`); }
-    else if (rsi >= 35 && rsi <= 55 && nearEmaOben) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} Pullback nahe EMA`); }
-    else if (rsi >= 35 && rsi <= 55 && atFibZone) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} Pullback Fib ${fibName}`); }
-    else if (rsi >= 35 && rsi <= 55) { ps = 70; signals.push(`RSI ${rsi.toFixed(0)} Pullback-Zone`); }
-    else if (rsi > 55 && rsi <= 58 && atFibZone) { ps = 65; signals.push(`RSI ${rsi.toFixed(0)} leichter Pullback + Fib`); }
-    else if (rsi > 55 && rsi <= 65) ps = 45;
-    else if (rsi < 35) { ps = 60; signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`); }
-    else if (rsi > 70) ps = 10;
+  if (S === "TREND_PULLBACK") {
+    // Kernfaktor: Pullback 0.5-1.5 ATR vom Hoch + nahe EMA20
+    const pbATR = ind.pullbackATR;
+    const nearEmaOben = ind.priceNearEmaAbove;
+    if (pbATR >= 0.5 && pbATR <= 1.5 && nearEmaOben && atFibZone) { ps = 100; signals.push(`PB ${pbATR.toFixed(1)} ATR + EMA + Fib ${fibName}`); }
+    else if (pbATR >= 0.5 && pbATR <= 1.5 && nearEmaOben) { ps = 90; signals.push(`PB ${pbATR.toFixed(1)} ATR + EMA20`); }
+    else if (pbATR >= 0.5 && pbATR <= 1.5 && atFibZone) { ps = 85; signals.push(`PB ${pbATR.toFixed(1)} ATR + Fib ${fibName}`); }
+    else if (pbATR >= 0.5 && pbATR <= 1.5) { ps = 75; signals.push(`PB ${pbATR.toFixed(1)} ATR`); }
+    else if (pbATR > 1.5 && pbATR <= 2.0 && nearEmaOben) { ps = 60; }
+    else if (ind.distToEma20 < 2) { ps = 55; }
+    else if (pbATR > 2.0) { ps = 20; } // Zu weit gefallen
     else ps = 30;
-  } else if (S === "MEAN_REVERSION") {
-    // Die Uebertreibung / Gummiband: Tiefer RSI + weit vom EMA = Snap-Back-Potential
-    const deepFib = atFib50 || atFib618 || ind.atFib786 || (fibLevel >= 0.68);
-    const distEma = ind.distToEma20; // Distanz zum EMA 20 in %
-    const fibTag = fibName || (fibLevel >= 0.73 ? "78.6%" : fibLevel >= 0.68 ? ">68%" : "");
-    if (rsi < 30 && deepFib) { ps = 100; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag} Reversal`); }
-    else if (rsi < 30) { ps = 90; signals.push(`RSI ${rsi.toFixed(0)} stark ueberverkauft`); }
-    else if (rsi < 35 && deepFib) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag}`); }
-    else if (rsi < 35) { ps = 75; signals.push(`RSI ${rsi.toFixed(0)} ueberverkauft`); }
-    else if (rsi < 40 && (atFibZone || deepFib)) { ps = 65; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibTag || (fibLevel * 100).toFixed(0) + "%"}`); }
-    else if (rsi < 40) ps = 50;
-    else if (rsi < 45 && deepFib && distEma > 5) { ps = 40; signals.push(`RSI ${rsi.toFixed(0)} + ${distEma.toFixed(1)}% unter EMA`); }
-    else ps = 15; // RSI > 45 oder kein Deep Fib = schwaches MR Signal
-    // Gummiband: Je weiter unter EMA 20, desto mehr Snap-Back-Potential
-    if (distEma > 10 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 10); signals.push(`${distEma.toFixed(1)}% unter EMA 20 (Gummiband)`); }
-    else if (distEma > 5 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 5); }
+    // Merkmalliste-Signale
+    if (ind.insideBar) { ps = Math.min(100, ps + 5); signals.push("Inside Bar (Konsolidierung)"); }
+    if (ind.higherLow) { ps = Math.min(100, ps + 5); signals.push("Higher Low"); }
+    if (ind.ema20Reclaim) { ps = Math.min(100, ps + 5); signals.push("EMA20 Reclaim"); }
   } else if (S === "BREAKOUT") {
-    // RSI 50-65 ideal (Momentum baut sich auf, nicht ueberverkauft)
+    // RSI 50-65 ideal (Momentum baut sich auf)
     if (rsi >= 50 && rsi <= 65) { ps = 75; }
     else if (rsi >= 45 && rsi < 50) ps = 55;
     else if (rsi > 65 && rsi <= 75) ps = 40;
     else ps = 20;
-  } else { // GENERAL — altes Verhalten
+  } else if (S === "RANGE") {
+    // Nahe Unterstuetzung (Range-Low) = Entry-Zone
+    if (ind.bbRelPos !== null && ind.bbRelPos < 0.20 && ind.bounceCount >= 2) { ps = 100; signals.push("Nahe Range-Low + Support"); }
+    else if (ind.bbRelPos !== null && ind.bbRelPos < 0.30 && ind.bounceCount >= 1) { ps = 80; }
+    else if (ind.bbRelPos !== null && ind.bbRelPos < 0.30) { ps = 60; }
+    else if (ind.bbRelPos !== null && ind.bbRelPos < 0.50) { ps = 40; }
+    else ps = 15; // Obere Haelfte der Range = kein Long-Entry
+  } else if (S === "BOUNCE") {
+    // Drop >= 3 ATR vom Hoch = Kapitulation
+    const pbATR = ind.pullbackATR;
+    const distEma = ind.distToEma20;
+    const deepFib = atFib50 || atFib618 || ind.atFib786 || (fibLevel >= 0.68);
+    if (pbATR >= 4 && rsi < 30) { ps = 100; signals.push(`Drop ${pbATR.toFixed(1)} ATR + RSI ${rsi.toFixed(0)}`); }
+    else if (pbATR >= 3 && rsi < 35) { ps = 90; signals.push(`Drop ${pbATR.toFixed(1)} ATR`); }
+    else if (pbATR >= 3) { ps = 75; }
+    else if (rsi < 30 && deepFib) { ps = 85; signals.push(`RSI ${rsi.toFixed(0)} + Fib ${fibName || ">55%"}`); }
+    else if (rsi < 30) { ps = 70; }
+    else if (rsi < 35 && deepFib) { ps = 60; }
+    else if (rsi < 35) { ps = 50; }
+    else ps = 20;
+    // Gummiband-Effekt
+    if (distEma > 10 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 10); signals.push(`${distEma.toFixed(1)}% unter EMA20 (Gummiband)`); }
+    else if (distEma > 5 && !ind.priceAboveEma20) { ps = Math.min(100, ps + 5); }
+  } else { // GENERAL
     if (isBullishEMA || isPartialBullish) {
       if (rsi >= 35 && rsi <= 55 && atFibZone && priceNearEma) { ps = 100; signals.push(`Pullback Fib ${fibName} + RSI ${rsi.toFixed(0)} + EMA`); }
       else if (rsi >= 35 && rsi <= 55 && priceNearEma) { ps = 90; }
@@ -955,7 +1088,6 @@ function scoreForSetup(ind, setupKey) {
   let fibInfo = "?";
   if (fibLevel >= 0) {
     const fibPct = (fibLevel * 100).toFixed(0);
-    // Naechstes Fib-Level bestimmen
     const nearestFib = ind.atFib236 ? "23.6%" : ind.atFib382 ? "38.2%" : ind.atFib50 ? "50%" : ind.atFib618 ? "61.8%" : ind.atFib786 ? "78.6%" : "";
     const fibPrice = nearestFib && ind.fibPrices[nearestFib] ? ind.fibPrices[nearestFib] : null;
     fibInfo = nearestFib && fibPrice
@@ -967,7 +1099,6 @@ function scoreForSetup(ind, setupKey) {
   // ═══ F3: MOMENTUM ═══
   let ms = 10;
   const { macdBullish, macdCrossing, macdAboveZero, stochBullish, stochOversold, rsiBullDiv } = ind;
-  // Momentum-Tier (abstrahiert)
   const momTier = (macdCrossing && stochBullish && rsiBullDiv) ? 8
     : (rsiBullDiv && (macdBullish || stochBullish)) ? 7
     : (macdCrossing && stochBullish) ? 6
@@ -977,23 +1108,26 @@ function scoreForSetup(ind, setupKey) {
     : (macdBullish && macdAboveZero) ? 2
     : macdBullish ? 1 : 0;
 
-  if (S === "TREND_FOLLOW") {
-    // MACD ueber Null + steigend = ideal. Divergenz weniger relevant.
-    ms = [10, 50, 80, 65, 60, 45, 70, 55, 75][momTier];
+  if (S === "TREND_PULLBACK") {
+    // MACD ueber Null + steigend = Trend intakt
+    ms = [10, 40, 75, 65, 70, 80, 90, 95, 100][momTier];
     if (momTier >= 2 && macdAboveZero) { ms = Math.max(ms, 80); signals.push("MACD ueber Null, steigend"); }
-  } else if (S === "PULLBACK") {
-    ms = [10, 40, 55, 70, 75, 80, 90, 95, 100][momTier];
-    if (momTier >= 5) signals.push(rsiBullDiv ? "Bullische RSI-Divergenz" : "MACD Cross");
-  } else if (S === "MEAN_REVERSION") {
-    // RSI-Divergenz ist KRITISCH fuer Mean Reversion
+  } else if (S === "BREAKOUT") {
+    ms = [10, 45, 65, 75, 85, 55, 90, 70, 85][momTier];
+    if (macdCrossing) signals.push("MACD Bullish Cross (Breakout)");
+  } else if (S === "RANGE") {
+    // Neutral-Zone RSI = ideal, extreme Werte = Range endet
+    if (rsi >= 40 && rsi <= 60) ms = 70;
+    else if (rsi >= 35 && rsi <= 65) ms = 50;
+    else ms = 20;
+  } else if (S === "BOUNCE") {
+    // RSI-Divergenz ist KRITISCH fuer Bounce
     ms = [5, 15, 20, 50, 65, 95, 80, 100, 100][momTier];
     if (rsiBullDiv) signals.push("Bullische RSI-Divergenz (Reversal)");
     else if (stochOversold && stochBullish) { ms = Math.max(ms, 60); signals.push("StochRSI dreht aus Oversold"); }
     else if (stochOversold) ms = Math.max(ms, 40);
-  } else if (S === "BREAKOUT") {
-    // MACD Crossing + Volume = Breakout-Bestaetigung
-    ms = [10, 45, 65, 75, 85, 55, 90, 70, 85][momTier];
-    if (macdCrossing) signals.push("MACD Bullish Cross (Breakout)");
+    // Erste gruene Umkehrkerze = starkes Signal
+    if (ind.firstGreenReversal) { ms = Math.min(100, ms + 15); signals.push("Erste gruene Umkehrkerze"); }
   } else { // GENERAL
     ms = [10, 40, 55, 70, 75, 80, 90, 95, 100][momTier];
     if (momTier >= 7) signals.push("MACD Cross + RSI-Divergenz + StochRSI");
@@ -1008,34 +1142,41 @@ function scoreForSetup(ind, setupKey) {
   let volLabel = "neutral";
   const { volRatio, lastIsRed, obvRising, pullbackVolDeclining, volDirection, last3Green, last3AllRed } = ind;
 
-  if (S === "MEAN_REVERSION") {
-    // Hohe rote Kerze = Kapitulation (POSITIV fuer MR!), danach sinkendes Vol = Erschoepfung
-    if (ind.heavySelling && last3AllRed) { vs = 40; volLabel = "Kapitulation"; signals.push("Kapitulations-Volumen (Reversal?)"); }
-    else if (ind.distributionPattern) { vs = 30; volLabel = "Abverkauf"; }
+  if (S === "BOUNCE") {
+    // Kapitulations-Muster: Sell-Climax → sinkendes Vol → erste gruene Kerze mit Vol
+    if (ind.heavySelling && last3AllRed) { vs = 40; volLabel = "Kapitulation"; signals.push("Kapitulations-Volumen"); }
     else if (ind.heavySelling) { vs = 45; volLabel = "Sell-Climax"; signals.push("Sell-Climax (Vol-Spike)"); }
-    else if (ind.sellingPressure) { vs = 35; volLabel = "Druck"; }
     else if (pullbackVolDeclining) { vs = 80; volLabel = "Vol sinkt"; signals.push("Volumen sinkt (Erschoepfung)"); }
+    else if (!lastIsRed && volRatio >= 1.3) { vs = 95; volLabel = "Reversal-Vol"; signals.push("Gruene Kerze + hohes Vol = Reversal"); }
+    else if (ind.sellingPressure) { vs = 35; volLabel = "Druck"; }
     else if (volDirection < 0.35) { vs = 50; volLabel = "Abgabe"; }
-    else if (!lastIsRed && volRatio >= 1.3) { vs = 90; volLabel = "Reversal-Vol"; signals.push("Gruene Kerze + hohes Vol = Reversal"); }
     else vs = 30;
+    // Lange untere Dochte = Kaufinteresse
+    if (ind.longLowerWicks) { vs = Math.min(100, vs + 10); signals.push("Lange untere Dochte"); }
   } else if (S === "BREAKOUT") {
-    // Die Explosion: Vol-Surge = Make or Break. Ohne Volumen = Fakeout!
+    // Vol-Surge = Make or Break. Ohne Volumen = Fakeout!
     if (!lastIsRed && volRatio >= 1.8) { vs = 100; volLabel = "Breakout-Vol"; signals.push(`Vol ${volRatio.toFixed(1)}x Breakout`); }
     else if (!lastIsRed && volRatio >= 1.3) { vs = 85; volLabel = "Surge"; signals.push(`Vol ${volRatio.toFixed(1)}x Surge`); }
     else if (obvRising && !lastIsRed && volRatio >= 1.0) { vs = 60; volLabel = "OBV+"; }
     else if (ind.heavySelling || ind.distributionPattern) { vs = 0; volLabel = "Abbruch"; }
     else if (lastIsRed) { vs = 10; volLabel = "rot"; }
-    else if (!lastIsRed && volRatio < 0.8) { vs = 10; volLabel = "Fakeout"; signals.push(`\u26a0\ufe0f Fakeout-Gefahr: Vol nur ${volRatio.toFixed(1)}x`); }
-    else { vs = 20; volLabel = "schwach"; } // Vol 0.8-1.0 ohne OBV = unsicher
+    else if (!lastIsRed && volRatio < 0.8) { vs = 10; volLabel = "Fakeout"; signals.push(`\u26a0\ufe0f Fakeout: Vol nur ${volRatio.toFixed(1)}x`); }
+    else { vs = 20; volLabel = "schwach"; }
+  } else if (S === "RANGE") {
+    // Niedriges Volumen = typisch fuer Range
+    if (volRatio < 0.7 && !lastIsRed) { vs = 70; volLabel = "ruhig"; }
+    else if (volRatio < 1.0) { vs = 55; volLabel = "normal"; }
+    else if (volRatio >= 1.5) { vs = 15; volLabel = "hoch"; } // Hohes Vol = Range-Bruch moeglich
+    else vs = 40;
   } else {
-    // TREND_FOLLOW, PULLBACK, GENERAL — aehnliche Logik
+    // TREND_PULLBACK, GENERAL
     if (ind.heavySelling && last3AllRed) { vs = 0; volLabel = "Panikverkauf"; signals.push(`\u26a0\ufe0f Panikverkauf: Vol ${volRatio.toFixed(1)}x, 3x rot`); }
-    else if (ind.distributionPattern) { vs = 5; volLabel = "Distribution"; signals.push(`\u26a0\ufe0f Distribution: ${ind.redHighVolCount || 0}/3 rote High-Vol`); }
+    else if (ind.distributionPattern) { vs = 5; volLabel = "Distribution"; signals.push(`\u26a0\ufe0f Distribution`); }
     else if (ind.heavySelling) { vs = 15; volLabel = "Verkaufsdruck"; }
-    else if (ind.sellingPressure) { vs = S === "TREND_FOLLOW" ? 20 : 25; volLabel = "leichter Druck"; }
+    else if (ind.sellingPressure) { vs = 25; volLabel = "leichter Druck"; }
     else if (obvRising && pullbackVolDeclining && volDirection > 0.55) {
       vs = last3Green >= 2 ? 100 : 85; volLabel = "Akkumulation";
-      signals.push(`Akkumulation + Pullback auf low Vol`);
+      signals.push("Akkumulation + Pullback auf low Vol");
     }
     else if (obvRising && volRatio >= 1.5 && !lastIsRed) { vs = 90; volLabel = "Akkumulation"; }
     else if (obvRising && pullbackVolDeclining) { vs = 75; volLabel = "PB-Vol sinkt"; }
@@ -1050,32 +1191,30 @@ function scoreForSetup(ind, setupKey) {
   let rs = 40;
   const { perf20d, perf5d, perf50d } = ind;
 
-  if (S === "TREND_FOLLOW") {
-    // Outperformance = KRITISCH fuer Trend Follow
-    if (perf20d > 5) { rs = 100; signals.push(`Outperformer +${perf20d.toFixed(1)}% 20d`); }
-    else if (perf20d > 3) { rs = 80; }
-    else if (perf20d > 1) rs = 55;
-    else if (perf20d > 0) rs = 35;
-    else rs = 10;
-  } else if (S === "PULLBACK") {
-    // Stark 20d + kurzfristiger Ruecksetzer = ideal
+  if (S === "TREND_PULLBACK") {
+    // Stark 20d + kurzfristiger Ruecksetzer = ideal fuer Pullback im Trend
     if (perf20d > 3 && perf5d < 0 && perf5d > -5) { rs = 100; signals.push(`Rel.Staerke +${perf20d.toFixed(1)}% 20d, PB ${perf5d.toFixed(1)}%`); }
     else if (perf50d > 10 && perf20d > 0 && perf5d < 0) { rs = 90; signals.push(`50d +${perf50d.toFixed(0)}%, Pullback`); }
     else if (perf20d > 3) rs = 70;
     else if (perf20d > 0) rs = 50;
     else if (perf20d > -3) rs = 30;
     else rs = 10;
-  } else if (S === "MEAN_REVERSION") {
-    // Underperformance = CHANCE (ueberverkauft, Snap-Back-Potential)
-    if (perf20d < -10) { rs = 70; signals.push(`Stark ueberverkauft ${perf20d.toFixed(1)}% 20d`); }
-    else if (perf20d < -5) { rs = 80; signals.push(`Ueberverkauft ${perf20d.toFixed(1)}% 20d`); }
-    else if (perf20d < -2) rs = 60;
-    else if (perf20d < 0) rs = 40;
-    else rs = 15; // Positiv = kein Mean Reversion
   } else if (S === "BREAKOUT") {
     if (perf20d > 3) rs = 70;
     else if (perf20d > 0) rs = 50;
     else if (perf20d > -3) rs = 35;
+    else rs = 15;
+  } else if (S === "RANGE") {
+    // Neutral = gut fuer Range
+    if (perf20d > -2 && perf20d < 2) { rs = 70; }
+    else if (perf20d > -5 && perf20d < 5) { rs = 50; }
+    else rs = 20; // Starke Bewegung = Range bricht
+  } else if (S === "BOUNCE") {
+    // Underperformance = CHANCE (Snap-Back)
+    if (perf20d < -10) { rs = 70; signals.push(`Stark ueberverkauft ${perf20d.toFixed(1)}% 20d`); }
+    else if (perf20d < -5) { rs = 80; signals.push(`Ueberverkauft ${perf20d.toFixed(1)}% 20d`); }
+    else if (perf20d < -2) rs = 60;
+    else if (perf20d < 0) rs = 40;
     else rs = 15;
   } else { // GENERAL
     if (perf20d > 3 && perf5d < 0 && perf5d > -5) { rs = 100; signals.push(`Rel.Staerke +${perf20d.toFixed(1)}% 20d, PB ${perf5d.toFixed(1)}%`); }
@@ -1093,27 +1232,30 @@ function scoreForSetup(ind, setupKey) {
   const { bbSqueeze, bbRelPos } = ind;
 
   if (S === "BREAKOUT") {
-    // Squeeze ist KRITISCH fuer Breakout
+    // Squeeze = Kompression = KRITISCH fuer Breakout
     if (bbSqueeze && bbRelPos !== null && bbRelPos < 0.4) { vols = 100; signals.push("BB Squeeze (Ausbruch erwartet)"); }
     else if (bbSqueeze) { vols = 85; signals.push("BB Squeeze"); }
-    else if (bbRelPos !== null && bbRelPos > 0.7 && !lastIsRed) { vols = 55; } // Ueber Mitte, bullisch
+    else if (bbRelPos !== null && bbRelPos > 0.7 && !lastIsRed) { vols = 55; }
     else vols = 20;
-  } else if (S === "MEAN_REVERSION") {
-    // Unter BB = oversold-Extrem = GUT fuer MR
-    if (bbRelPos !== null && bbRelPos < 0.05) { vols = 100; signals.push("Unter Bollinger Band (Extrem)"); }
-    else if (bbRelPos !== null && bbRelPos < 0.15) { vols = 85; signals.push("Nahe BB-Low"); }
-    else if (bbRelPos !== null && bbRelPos < 0.25) { vols = 65; }
-    else if (bbSqueeze) vols = 40;
-    else vols = 20;
-  } else if (S === "TREND_FOLLOW") {
-    // Ueber Mitte = Trend laeuft, Squeeze = potentieller Ausbruch
-    if (bbRelPos !== null && bbRelPos > 0.6 && bbRelPos < 0.85) { vols = 70; }
-    else if (bbSqueeze) { vols = 60; signals.push("BB Squeeze"); }
-    else if (bbRelPos !== null && bbRelPos > 0.85) vols = 40;
-    else if (bbRelPos !== null && bbRelPos < 0.3) vols = 15;
-    else vols = 35;
-  } else if (S === "PULLBACK") {
-    // Squeeze bei Support = ideal, nahe BB-Low = Pullback-Tiefe
+    // ATR nimmt zu = Ausbruch bestaetigend
+    if (ind.atrTrend > 0.15) { vols = Math.min(100, vols + 10); signals.push("ATR steigend"); }
+  } else if (S === "BOUNCE") {
+    // ATR stark steigend = Kapitulationsphase
+    if (ind.atrTrend > 0.30) { vols = 90; signals.push(`ATR +${(ind.atrTrend * 100).toFixed(0)}% (Kapitulation)`); }
+    else if (ind.atrTrend > 0.15) { vols = 70; signals.push("ATR steigend"); }
+    else if (bbRelPos !== null && bbRelPos < 0.05) { vols = 85; signals.push("Unter Bollinger Band (Extrem)"); }
+    else if (bbRelPos !== null && bbRelPos < 0.15) { vols = 70; }
+    else if (bbRelPos !== null && bbRelPos < 0.25) { vols = 55; }
+    else vols = 25;
+  } else if (S === "RANGE") {
+    // Niedriger ATR + enge Baender = Range intakt
+    const lowBW = ind.bbBandwidth < (ind.currentPrice * 0.03);
+    if (lowBW && !bbSqueeze) { vols = 80; signals.push("Enge Baender (Range)"); }
+    else if (bbSqueeze) { vols = 40; } // Squeeze = Ausbruch steht bevor → Range endet
+    else if (ind.bbBandwidth < ind.currentPrice * 0.05) { vols = 60; }
+    else vols = 25;
+  } else if (S === "TREND_PULLBACK") {
+    // BB-Position: nahe BB-Low = Pullback-Tiefe erreicht
     if (bbSqueeze && bbRelPos !== null && bbRelPos < 0.4) { vols = 90; signals.push("BB Squeeze am Support"); }
     else if (bbRelPos !== null && bbRelPos < 0.25) { vols = 65; signals.push("Nahe BB-Low"); }
     else if (bbSqueeze) { vols = 60; }
@@ -1133,23 +1275,31 @@ function scoreForSetup(ind, setupKey) {
   let ss = 5;
   const { bounceCount, nearEma20, nearEma50, nearEma200, confluence } = ind;
 
-  if (S === "TREND_FOLLOW") {
-    // Ueber EMAs = Trend intakt = Support "von oben"
-    if (ind.priceAboveEma20 && ind.isBullishEMA) { ss = 60; }
-    else if (nearEma20 && ind.isBullishEMA) { ss = 55; }
-    else if (nearEma50) ss = 45;
-    else if (nearEma200) { ss = 50; signals.push("EMA 200 Support"); }
-    else if (bounceCount >= 2) ss = 40;
+  if (S === "TREND_PULLBACK") {
+    // EMA20 als Support = klassischer Pullback-Level
+    if (ind.priceNearEmaAbove && ind.isBullishEMA && atFibZone) { ss = 100; signals.push("EMA20 + Fib Support"); }
+    else if (ind.priceNearEmaAbove && ind.isBullishEMA) { ss = 75; }
+    else if (ind.priceAboveEma20 && ind.isBullishEMA) { ss = 60; }
+    else if (nearEma50) { ss = 50; signals.push("EMA 50 Support"); }
+    else if (nearEma200) { ss = 55; signals.push("EMA 200 Support"); }
+    else if (bounceCount >= 2) ss = 45;
     else ss = 15;
-  } else if (S === "MEAN_REVERSION" || S === "PULLBACK") {
-    // Konfluenz = KRITISCH
+  } else if (S === "RANGE") {
+    // Bounces an Range-Raendern = KRITISCH
+    if (bounceCount >= 3) { ss = 100; signals.push(`${bounceCount} Bounces an Support`); }
+    else if (bounceCount >= 2 && ind.longLowerWicks) { ss = 90; signals.push("Support + Dochte"); }
+    else if (bounceCount >= 2) { ss = 75; }
+    else if (bounceCount >= 1 && ind.atFibZone) { ss = 60; }
+    else if (bounceCount >= 1) ss = 40;
+    else ss = 10;
+  } else if (S === "BOUNCE") {
+    // Konfluenz hilft, aber nicht primaer
     if (confluence >= 3) { ss = 100; signals.push("Konfluenz: Support + EMA + Fib"); }
-    else if (confluence === 2) { ss = 85; signals.push(`${bounceCount >= 2 ? bounceCount + " Supports" : ""}${ind.emaSupport ? " + EMA" : ""}${ind.atDeepFib ? " + Fib" : ""}`); }
-    else if (bounceCount >= 3) { ss = 80; signals.push(`${bounceCount} Swing-Lows Support`); }
+    else if (confluence === 2) { ss = 85; }
+    else if (bounceCount >= 3) { ss = 80; }
     else if (nearEma200) { ss = 70; signals.push("EMA 200 Support"); }
     else if (bounceCount >= 2) ss = 60;
-    else if (nearEma50) { ss = 50; signals.push("EMA 50 Support"); }
-    else if (nearEma20 && isBullishEMA) ss = 45;
+    else if (nearEma50) ss = 50;
     else if (bounceCount === 1 || ind.atDeepFib) ss = 30;
     else ss = 5;
   } else { // BREAKOUT, GENERAL
@@ -1176,11 +1326,13 @@ function computeSwingScore(candles) {
 
   const ind = extractIndicators(candles);
 
-  // Qualifizierende Setups evaluieren
+  // Qualifizierende Setups evaluieren (mit Invalidierungs-Check)
   const results = [];
   for (const [typeKey, setup] of Object.entries(SETUP_TYPES)) {
     try {
       if (!setup.qualify(ind)) continue;
+      // Merkmalliste v2: Invalidierung pruefen
+      if (setup.invalidate && setup.invalidate(ind)) continue;
     } catch (e) { continue; }
 
     const { factors, signals } = scoreForSetup(ind, typeKey);
@@ -1803,7 +1955,7 @@ async function sendTelegramScannerAlerts(filtered, env) {
   const header = newHits.length === 1
     ? "\u{1F3AF} <b>Trade-Setup</b>"
     : `\u{1F3AF} <b>${newHits.length} Trade-Setups</b>`;
-  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Swing \u{2265} 75 \u{2022} ATR-Stop 1.5x \u{2022} CRV 2.5:1</i>`;
+  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Swing \u{2265} 78 \u{2022} ATR-Stop 1.5x \u{2022} CRV 2.5:1</i>`;
   await sendTelegram(msg, env);
   await Promise.all(cooldownWrites);
   console.log(`[Telegram] Scanner alerts sent: ${newHits.length} hits`);
@@ -2291,7 +2443,7 @@ function formatBriefingForTelegram(briefing) {
   }
 
   msg3 += `\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n`;
-  msg3 += `\uD83D\uDD0D <i>Trade-Setups kommen separat via Screener-Alerts (alle 5 Min, Swing \u2265 75)</i>\n`;
+  msg3 += `\uD83D\uDD0D <i>Trade-Setups kommen separat via Screener-Alerts (alle 5 Min, Swing \u2265 78)</i>\n`;
   msg3 += `\u26A0\uFE0F <i>Keine Anlageberatung. Alle Angaben ohne Gewaehr.</i>`;
 
   if (msg3) messages.push(msg3);

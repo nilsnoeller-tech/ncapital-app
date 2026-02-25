@@ -1,12 +1,13 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
-import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper, LogOut, Settings as SettingsIcon, Lock, User, Edit3, Trash2, Save } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, Layers, Newspaper, LogOut, Settings as SettingsIcon, Lock, User, Edit3, Trash2, Save, Camera, Image as ImageIcon } from "lucide-react";
 import Watchlist from "./components/Watchlist";
 import Briefing from "./components/Briefing";
 import LoginPage from "./components/LoginPage";
 import { useAutoScore } from "./hooks/useAutoScore";
 import { getFinvizChartUrl, isFinvizAvailable } from "./services/marketData";
 import { isAuthenticated, getUser, logout as authLogout, changePassword } from "./services/auth";
+import { saveScreenshot, getScreenshotUrl, deleteScreenshot } from "./services/screenshotStore";
 
 // ─── Color System ───
 const C = {
@@ -226,9 +227,9 @@ function computePortfolio(tradeList, startkapital) {
 // ─── Helpers ───
 const fmt = (v, d = 2) => typeof v === "number" ? (isFinite(v) ? v.toFixed(d) : "∞") : "–";
 const fmtEur = (v) => typeof v === "number" ? new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(v) : "–";
-const ampelColor = (a) => a === "GRÜN" ? C.green : a === "ORANGE" ? C.orange : a === "ROT" ? C.red : a === "NICHT TRADEN" ? C.noTrade : C.textMuted;
-const ampelBg = (a) => a === "GRÜN" ? C.greenBg : a === "ORANGE" ? C.orangeBg : a === "ROT" ? C.redBg : a === "NICHT TRADEN" ? C.noTradeBg : "transparent";
-const ampelBorder = (a) => a === "GRÜN" ? C.greenBorder : a === "ORANGE" ? C.orangeBorder : a === "ROT" ? C.redBorder : a === "NICHT TRADEN" ? C.noTradeBorder : C.border;
+const ampelColor = (a) => a === "GRÜN" ? C.green : a === "ORANGE" ? C.orange : a === "ROT" ? C.red : a === "NICHT TRADEN" ? C.noTrade : a === "MANUELL" ? C.blue : C.textMuted;
+const ampelBg = (a) => a === "GRÜN" ? C.greenBg : a === "ORANGE" ? C.orangeBg : a === "ROT" ? C.redBg : a === "NICHT TRADEN" ? C.noTradeBg : a === "MANUELL" ? C.blueBg : "transparent";
+const ampelBorder = (a) => a === "GRÜN" ? C.greenBorder : a === "ORANGE" ? C.orangeBorder : a === "ROT" ? C.redBorder : a === "NICHT TRADEN" ? C.noTradeBorder : a === "MANUELL" ? `${C.blue}33` : C.border;
 
 // ─── Responsive Hook ───
 function useWindowWidth() {
@@ -359,181 +360,101 @@ const CandleIcon = ({ type, size = 32 }) => {
 // ─── TRADE CHECK — Geführter Fragebogen mit Setup-Gewichtung ───
 // ════════════════════════════════════════════════════════════════
 
+// ─── Merkmalliste v2: 4 Setup-Typen mit gewichteten Kriterien ───
+const MERKMALLISTE = {
+  "trend_pullback": {
+    key: "trend_pullback", label: "Trend-Pullback", emoji: "🎯", color: C.green,
+    desc: "Ruecksetzer im Aufwaertstrend",
+    criteria: [
+      { autoKey: "aboveSMA50", label: "Kurs > SMA50", weight: 15 },
+      { autoKey: "aboveSMA200", label: "Kurs > SMA200", weight: 10 },
+      { autoKey: "pullbackRange", label: "Pullback 0.5–1.5 ATR", weight: 20 },
+      { autoKey: "nearEMA20", label: "Nahe EMA20", weight: 15 },
+      { autoKey: "insideBar", label: "Inside Bar", weight: 10 },
+      { autoKey: "higherLow", label: "Higher Low", weight: 15 },
+      { autoKey: "ema20Reclaim", label: "EMA20 Reclaim", weight: 10 },
+      { autoKey: "breakPullbackHigh", label: "Bruch Pullback-Hoch", weight: 5 },
+    ],
+    invalidators: [
+      { autoKey: "aboveSMA50", label: "Kurs < SMA50", inverted: true },
+    ],
+  },
+  "breakout": {
+    key: "breakout", label: "Breakout", emoji: "⚡", color: C.accent,
+    desc: "Ausbruch ueber Widerstand",
+    criteria: [
+      { autoKey: "multipleTests", label: "Mehrere Tests am Widerstand", weight: 15 },
+      { autoKey: "compressionNearHigh", label: "Kompression nahe Hoch", weight: 20 },
+      { autoKey: "higherLows", label: "Hoehere Tiefs", weight: 15 },
+      { autoKey: "bigGreenCandle", label: "Grosse gruene Kerze", weight: 20 },
+      { autoKey: "closeNearDayHigh", label: "Close nahe Tageshoch", weight: 15 },
+      { autoKey: "atrIncreasing", label: "ATR nimmt zu", weight: 15 },
+    ],
+    invalidators: [],
+  },
+  "range": {
+    key: "range", label: "Range", emoji: "↔️", color: C.blue,
+    desc: "Seitwaertsphase",
+    criteria: [
+      { autoKey: "flatSMAs", label: "Flache SMAs", weight: 15 },
+      { autoKey: "directionChanges", label: "Viele Richtungswechsel", weight: 15 },
+      { autoKey: "lowATR", label: "ATR niedrig", weight: 15 },
+      { autoKey: "wicksAtEdges", label: "Dochte an Raendern", weight: 20 },
+      { autoKey: "alternatingColors", label: "Wechselnde Kerzenfarben", weight: 15 },
+      { autoKey: "nearSupport", label: "Nahe Unterstuetzung", weight: 20 },
+    ],
+    invalidators: [],
+  },
+  "bounce": {
+    key: "bounce", label: "Bounce", emoji: "🔄", color: C.yellow,
+    desc: "Kapitulation + Umkehr",
+    criteria: [
+      { autoKey: "bigDrop", label: "Drop >= 3 ATR", weight: 20 },
+      { autoKey: "farBelowEMAs", label: "Weit unter EMA20/50", weight: 15 },
+      { autoKey: "atrRising", label: "ATR steigend", weight: 15 },
+      { autoKey: "bigRedCandles", label: "Grosse rote Kerzen", weight: 10 },
+      { autoKey: "longLowerWicks", label: "Lange untere Dochte", weight: 15 },
+      { autoKey: "firstGreenReversal", label: "Erste gruene Umkehrkerze", weight: 25 },
+    ],
+    invalidators: [],
+  },
+};
+
+const BASISDATEN_FIELDS = [
+  { key: "symbol", label: "Ticker / Symbol", placeholder: "z.B. SAP oder AVGO", suffix: "", inputType: "text" },
+  { key: "waehrung", label: "Handelswährung", type: "currency-toggle" },
+  { key: "kontostand", label: "Aktueller Kontostand", placeholder: "z.B. 45991", suffix: "€" },
+  { key: "risikoPct", label: "Max. Risiko pro Trade", placeholder: "1", suffix: "%" },
+  { key: "wechselkurs", label: "EUR/USD Wechselkurs", placeholder: "z.B. 0.93", suffix: "$/€", showIf: "usd", type: "fx-rate" },
+  { key: "einstieg", label: "Geplanter Einstiegskurs", placeholder: "z.B. 142.30", suffix: "CURRENCY" },
+  { key: "stopLoss", label: "Stop-Loss Kurs", placeholder: "z.B. 135.00", suffix: "CURRENCY" },
+  { key: "ziel", label: "Zielkurs (Take Profit)", placeholder: "z.B. 160.00", suffix: "CURRENCY" },
+];
+
+// Dummy QUESTIONS for backwards compat (only basis step)
 const QUESTIONS = [
-  // ── SCHRITT 0: Basisdaten ──
   {
-    id: "basis",
-    step: 0,
-    title: "Basisdaten",
-    subtitle: "Dein Konto und der Trade",
-    icon: DollarSign,
-    color: C.accent,
-    type: "inputs",
-    fields: [
-      { key: "symbol", label: "Ticker / Symbol", placeholder: "z.B. SAP oder AVGO", suffix: "", inputType: "text" },
-      { key: "waehrung", label: "Handelswährung", type: "currency-toggle" },
-      { key: "kontostand", label: "Aktueller Kontostand", placeholder: "z.B. 45991", suffix: "€" },
-      { key: "risikoPct", label: "Max. Risiko pro Trade", placeholder: "1", suffix: "%" },
-      { key: "wechselkurs", label: "EUR/USD Wechselkurs", placeholder: "z.B. 0.93", suffix: "$/€", showIf: "usd", type: "fx-rate" },
-      { key: "einstieg", label: "Geplanter Einstiegskurs", placeholder: "z.B. 142.30", suffix: "CURRENCY" },
-      { key: "stopLoss", label: "Stop-Loss Kurs", placeholder: "z.B. 135.00", suffix: "CURRENCY" },
-      { key: "ziel", label: "Zielkurs (Take Profit)", placeholder: "z.B. 160.00", suffix: "CURRENCY" },
-    ],
-  },
-  // ── SCHRITT 1–8: Bewertungsfragen mit setup-spezifischen Gewichten ──
-  {
-    id: "q1", step: 1, title: "Unterstützungszone",
-    subtitle: "Liegt dein Einstiegskurs an einer erkennbaren Unterstützung?",
-    icon: Target, color: C.blue, type: "choice",
-    weights: { default: 15, breakout: 20, meanReversion: 10, followThrough: 12 },
-    question: "Gibt es im Bereich deines Einstiegskurses (±1-2%) eine Unterstützungszone?",
-    hint: "Schau auf den Daily Chart der letzten 6–12 Monate: Hat der Kurs in diesem Bereich mehrfach gedreht? Erkennbar an langen unteren Dochten und/oder erhöhtem Volumen bei Berührung.",
-    options: [
-      { label: "Keine Unterstützung erkennbar", desc: "Kein sichtbarer Halt im Chart — Kurs könnte weiter fallen", score: 0 },
-      { label: "Schwache Zone", desc: "Kurs hat sich hier einmal kurz gehalten, aber keine deutliche Reaktion", score: 0.33 },
-      { label: "Klare Unterstützung", desc: "Mind. 2× hat der Kurs hier gedreht, erkennbar an langen Dochten", score: 0.75 },
-      { label: "Starke Zone + Kaufdruck", desc: "Mehrfach bestätigt mit sichtbarem Kaufdruck (Volumen, Dochte)", score: 1.0 },
-    ],
-  },
-  {
-    id: "q2", step: 2, title: "Volumen-Profil am Level",
-    subtitle: "Ist am Einstiegs-Level hohes historisches Volumen sichtbar?",
-    icon: BarChart3, color: C.green, type: "choice",
-    weights: { default: 12, breakout: 18, meanReversion: 8, followThrough: 10 },
-    question: "Was zeigt das Volume Profile an deinem Einstiegs-Level?",
-    hint: "Volume Profile zeigt, wo historisch am meisten gehandelt wurde. Hohes Volumen = Markt 'akzeptiert' diesen Preis → stärkerer S/R. Quelle: TradingView (Volume Profile Indicator). Daily Chart.",
-    options: [
-      { label: "Kaum Volumen am Level", desc: "Geringes historisches Volumen, Level wenig beachtet", score: 0 },
-      { label: "Moderate Aktivität", desc: "Etwas Volumen, aber kein klarer Cluster", score: 0.33 },
-      { label: "Deutlicher Volumen-Cluster", desc: "Level liegt in einer High Volume Node — gut gestützt", score: 0.75 },
-      { label: "POC / VPOC nahe Einstieg", desc: "Point of Control (meistgehandelter Preis) nahe deinem Level", score: 1.0 },
-    ],
-  },
-  {
-    id: "q3", step: 3, title: "Kerzen-Signal",
-    subtitle: "Was sagen dir die letzten Kerzen?",
-    icon: Activity, color: C.yellow, type: "choice",
-    weights: { default: 12, breakout: 10, meanReversion: 18, followThrough: 10 },
-    question: "Gibt es eine klare Bestätigungskerze am Level?",
-    hint: "Hammer = langer unterer Docht, kleiner Körper oben. Engulfing = große Kerze verschlingt vorherige. Doji = Kreuz, Unentschlossenheit. Pin Bar = langer Docht in eine Richtung. Daily Chart.",
-    candleIcons: true,
-    patternReference: [
-      { name: "Hammer", icon: "hammer", desc: "Langer unterer Docht, kleiner Körper oben — Käufer drücken Kurs hoch", signal: "bullish" },
-      { name: "Bullish Engulfing", icon: "engulfing", desc: "Große grüne Kerze verschlingt vorherige rote — starker Kaufdruck", signal: "bullish" },
-      { name: "Pin Bar", icon: "pinbar", desc: "Langer Docht nach unten — Ablehnung tieferer Kurse", signal: "bullish" },
-      { name: "Morning Star", icon: "morningstar", desc: "3-Kerzen-Umkehr: Rot → klein → Grün — Trendwende", signal: "bullish" },
-      { name: "Doji", icon: "doji", desc: "Kreuz-Kerze, winziger Körper — Unentschlossenheit", signal: "neutral" },
-      { name: "Keine Formation", icon: "none", desc: "Normaler Körper, kurze Dochte — kein Signal", signal: "none" },
-    ],
-    options: [
-      { label: "Keine erkennbare Formation", desc: "Unklares Bild, keine Umkehr-/Bestätigungskerze", score: 0, candle: "none" },
-      { label: "Doji / schwache Andeutung", desc: "Kreuz-Kerze: Markt unentschlossen, Signal noch schwach", score: 0.33, candle: "doji" },
-      { label: "Hammer / Pin Bar / Engulfing", desc: "Klare Umkehrkerze am Level — starkes Signal", score: 0.75, candle: "hammer" },
-      { label: "Formation + Folgekerze bestätigt", desc: "Bestätigungskerze + nächste Kerze bestätigt Richtung", score: 1.0, candle: "engulfing" },
-    ],
-  },
-  {
-    id: "q4", step: 4, title: "Trend & Struktur",
-    subtitle: "Unterstützt der Trend deinen Long-Einstieg?",
-    icon: TrendingUp, color: C.accent, type: "choice",
-    weights: { default: 15, breakout: 10, meanReversion: 8, followThrough: 22 },
-    question: "Wie ist der übergeordnete Trend auf dem Daily Chart?",
-    hint: "Ein Long-Trade MIT dem Aufwärtstrend hat deutlich höhere Erfolgschancen. Kaufen im Abwärtstrend braucht sehr starke Signale. Daily Chart.",
-    options: [
-      { label: "Klarer Abwärtstrend", desc: "Kurs fällt, tiefere Hochs und Tiefs — schwierig für Long", score: 0 },
-      { label: "Seitwärtsmarkt / kein Trend", desc: "Range-Markt, Kurs pendelt ohne klare Richtung", score: 0.33 },
-      { label: "Leichter Aufwärtstrend", desc: "Tendenz nach oben, aber noch nicht eindeutig", score: 0.67 },
-      { label: "Klarer Aufwärtstrend", desc: "Höhere Hochs und Tiefs, EMAs aufsteigend", score: 1.0 },
-    ],
-  },
-  {
-    id: "q5", step: 5, title: "RSI & Momentum",
-    subtitle: "Ist das Momentum auf deiner Seite?",
-    icon: Zap, color: C.green, type: "choice",
-    weights: { default: 10, breakout: 5, meanReversion: 20, followThrough: 8 },
-    question: "In welchem Bereich befindet sich der RSI(14)?",
-    hint: "RSI(14) auf dem Daily Chart. >70 = überkauft, Rücksetzer wahrscheinlich. <40 = unterstützt Long-Einstieg. Divergenz = Kurs macht neues Tief, RSI bildet höheres Tief → bullisches Signal.",
-    options: [
-      { label: "RSI überkauft (>70)", desc: "Rücksetzer wahrscheinlich — kein guter Long-Einstieg", score: 0.10 },
-      { label: "RSI neutral (50–70)", desc: "Kein extremes Signal, Trend könnte weiterlaufen", score: 0.40 },
-      { label: "RSI im Kaufbereich (30–50)", desc: "Gute Zone für Long-Einstiege, Momentum aufbauend", score: 0.75 },
-      { label: "RSI <40 + bullische Divergenz", desc: "Idealer Bereich + Kurs macht neues Tief, RSI steigt", score: 1.0 },
-    ],
-  },
-  {
-    id: "q6", step: 6, title: "EMA-Anordnung",
-    subtitle: "Sind die gleitenden Durchschnitte aufsteigend?",
-    icon: Layers, color: C.blue, type: "choice",
-    weights: { default: 10, breakout: 7, meanReversion: 6, followThrough: 18 },
-    question: "Wie stehen die EMAs (20/50/200) zueinander?",
-    hint: "Daily Chart. Aufwärtstrend: EMA 20 > 50 > 200. Abwärtstrend: 200 > 50 > 20. Verschlungen = Range/kein Trend.",
-    options: [
-      { label: "EMAs im Abwärtstrend (200 > 50 > 20)", desc: "Klarer Gegentrend — ungünstig für Long", score: 0 },
-      { label: "Verschlungen / keine Ordnung", desc: "Range-Markt, EMAs kreuzen sich ständig", score: 0.30 },
-      { label: "Teilweise aufsteigend", desc: "2 von 3 EMAs in Long-Richtung geordnet", score: 0.70 },
-      { label: "EMA 20 > 50 > 200", desc: "Klarer Aufwärtstrend — ideal für Long", score: 1.0 },
-    ],
-  },
-  {
-    id: "q7", step: 7, title: "Chart-Muster",
-    subtitle: "Erkennst du ein klassisches Chartmuster?",
-    icon: Crosshair, color: C.yellow, type: "choice",
-    weights: { default: 12, breakout: 16, meanReversion: 12, followThrough: 10 },
-    question: "Ist ein bekanntes Chart-Muster erkennbar?",
-    hint: "Daily Chart. Doppelboden, Head & Shoulders, Flagge, Keil, aufsteigende Dreiecke etc. verstärken das Signal.",
-    options: [
-      { label: "Kein Muster erkennbar", desc: "Unklare Chartstruktur", score: 0 },
-      { label: "Muster angedeutet, nicht vollständig", desc: "Könnte sich bilden, aber noch nicht bestätigt", score: 0.33 },
-      { label: "Klares Muster erkennbar", desc: "Flagge, Keil, Dreieck oder Doppelboden sichtbar", score: 0.75 },
-      { label: "Muster bestätigt + Ausbruch", desc: "Muster abgeschlossen mit Bestätigung", score: 1.0 },
-    ],
-  },
-  {
-    id: "q8", step: 8, title: "Leitindex-Check",
-    subtitle: "Unterstützt der Leitindex deinen Trade?",
-    icon: Shield, color: C.red, type: "choice",
-    weights: { default: 14, breakout: 14, meanReversion: 18, followThrough: 10 },
-    question: "Wie steht der Leitindex (S&P 500 oder DAX) zu seinen gleitenden Durchschnitten?",
-    hint: "USD-Aktien → S&P 500, EUR-Aktien → DAX. Prüfe auf Tageschart: Steht der Index über/unter 50-MA und 200-MA? Quelle: finviz.com oder boerse.de.",
-    options: [
-      { label: "Index unter 50-MA UND 200-MA", desc: "Bärenmarkt — schwierig für Käufe", score: 0 },
-      { label: "Index zwischen 50-MA und 200-MA", desc: "Korrektur- oder Erholungsphase", score: 0.36 },
-      { label: "Index über 200-MA, nahe 50-MA", desc: "Grundtrend intakt, kurzfristig neutral", score: 0.71 },
-      { label: "Index über 50-MA UND 200-MA", desc: "Bullenmarkt — breite Beteiligung", score: 1.0 },
-    ],
-  },
-  {
-    id: "q9", step: 9, title: "Bollinger Bänder",
-    subtitle: "Wo steht der Kurs relativ zu den Bändern?",
-    icon: Activity, color: C.yellow, type: "choice",
-    weights: { default: 10, breakout: 12, meanReversion: 18, followThrough: 6 },
-    question: "Wie verhält sich der Kurs zu den Bollinger Bändern (20,2)?",
-    hint: "Bollinger Bänder (20,2) = 20-Tage-MA ± 2 Standardabweichungen. Für Long: Kurs am unteren Band + Umkehrsignal = Kaufgelegenheit. Squeeze = niedrige Volatilität, Ausbruch steht bevor. Daily Chart.",
-    options: [
-      { label: "Kurs weit außerhalb (unter unterem Band)", desc: "Stark überverkauft — Mean Reversion Setup möglich", score: 0.25 },
-      { label: "Kurs innerhalb, nahe unterem Band", desc: "Nähert sich dem Band, aber noch kein Kontakt", score: 0.50 },
-      { label: "Kurs mittig zwischen den Bändern", desc: "Neutral — kein Signal von den Bändern", score: 0.35 },
-      { label: "Kurs am unteren Band + Umkehrsignal", desc: "Berührt Band und zeigt Kerzen-Umkehr (Hammer, Engulfing)", score: 0.80 },
-      { label: "Bollinger Squeeze + Ausbruch nach oben", desc: "Bänder eng zusammen, Ausbruch nach oben beginnt", score: 1.0 },
-    ],
+    id: "basis", step: 0, title: "Basisdaten", subtitle: "Dein Konto und der Trade",
+    icon: DollarSign, color: C.accent, type: "inputs", fields: BASISDATEN_FIELDS,
   },
 ];
 
 const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigate }) => {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(0); // 0=Basisdaten, 1=Merkmalliste, 2=Ergebnis
   const [inputs, setInputs] = useState({ symbol: "", waehrung: "EUR", kontostand: String(Math.round(portfolio.kapital * 100) / 100), risikoPct: "1", wechselkurs: "", einstieg: "", stopLoss: "", ziel: "" });
-  const [answers, setAnswers] = useState({});
   const [fxLoading, setFxLoading] = useState(false);
   const [fxDate, setFxDate] = useState("");
   const [tradeAdded, setTradeAdded] = useState(false);
   const [addInputs, setAddInputs] = useState({ stueckzahl: "", kaufkurs: "", datum: new Date().toISOString().split("T")[0] });
-  const [manualOverrides, setManualOverrides] = useState({}); // Tracks which questions were manually answered after auto-fill
-  const totalSteps = QUESTIONS.length;
+  const [checkedItems, setCheckedItems] = useState({}); // { autoKey: boolean }
+  const [selectedSetup, setSelectedSetup] = useState(null); // key from MERKMALLISTE
+  const [expandedSetup, setExpandedSetup] = useState(null); // which setup card is expanded
+  const totalSteps = 3; // Basisdaten, Merkmalliste, Ergebnis
   const ww = useWindowWidth();
   const isMobile = ww < 600;
 
-  // ── Auto-Score Integration ──
-  const { autoScores, loading: autoLoading, error: autoError, dataTimestamp, staleData, marketData, computeAutoScores, resetAutoScores } = useAutoScore();
+  // ── Auto-Score Integration (Merkmalliste v2) ──
+  const { merkmalResults, loading: autoLoading, error: autoError, dataTimestamp, staleData, marketData, computeAutoScores, resetAutoScores } = useAutoScore();
 
   // ── Prefill from Watchlist ──
   useEffect(() => {
@@ -601,32 +522,46 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const toEur = (val) => isUsd ? val * wechselkurs : val;
 
   const updateInput = (k, v) => setInputs(prev => ({ ...prev, [k]: v }));
-  const selectAnswer = (qId, optionIndex) => {
-    setAnswers(prev => ({ ...prev, [qId]: optionIndex }));
-    // Track dass diese Frage manuell beantwortet wurde (nach Auto-Fill)
-    if (autoScores) setManualOverrides(prev => ({ ...prev, [qId]: true }));
-  };
 
-  // ── Auto-Fill: Antworten vorausfuellen wenn autoScores verfuegbar ──
+  // ── Auto-Fill: Checkboxen aus Merkmalliste-Ergebnissen vorausfuellen ──
   useEffect(() => {
-    if (!autoScores) return;
-    setAnswers(prev => {
+    if (!merkmalResults) return;
+    setCheckedItems(prev => {
       const next = { ...prev };
-      Object.entries(autoScores).forEach(([qId, result]) => {
-        // Nur vorausfuellen wenn nicht bereits manuell beantwortet
-        if (next[qId] === undefined && !manualOverrides[qId]) {
-          next[qId] = result.optionIndex;
-        }
+      Object.entries(merkmalResults).forEach(([key, result]) => {
+        if (next[key] === undefined) next[key] = result.value;
       });
       return next;
     });
-  }, [autoScores]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [merkmalResults]);
+
+  // ── Auto-select best setup based on match percentage ──
+  const setupRankings = useMemo(() => {
+    return Object.values(MERKMALLISTE).map(setup => {
+      let matched = 0, total = 0;
+      setup.criteria.forEach(c => {
+        total += c.weight;
+        if (checkedItems[c.autoKey]) matched += c.weight;
+      });
+      const pct = total > 0 ? (matched / total) * 100 : 0;
+      return { ...setup, matched, total, pct };
+    }).sort((a, b) => b.pct - a.pct);
+  }, [checkedItems]);
+
+  useEffect(() => {
+    if (!selectedSetup && setupRankings.length > 0 && setupRankings[0].pct > 0) {
+      setSelectedSetup(setupRankings[0].key);
+      setExpandedSetup(setupRankings[0].key);
+    }
+  }, [setupRankings]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeSetup = selectedSetup ? MERKMALLISTE[selectedSetup] : null;
 
   const canProceed = step === 0
     ? (parseFloat(inputs.einstieg) > 0 && parseFloat(inputs.stopLoss) > 0 && parseFloat(inputs.ziel) > 0)
-    : answers[QUESTIONS[step]?.id] !== undefined;
+    : step === 1 ? selectedSetup != null : false;
 
-  const showResults = step === totalSteps;
+  const showResults = step === 2;
 
   // ── Berechnungen ──
   const kontostand = parseFloat(inputs.kontostand) || 0;
@@ -642,43 +577,16 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const kapitaleinsatz = toEur(orderGroesse * einstieg);
   const depotAnteil = kontostand > 0 ? (kapitaleinsatz / kontostand) * 100 : 0;
 
-  // ── Setup-Erkennung (ZUERST, unabhängig vom Score) ──
-  const detectedSetup = useMemo(() => {
-    const getIdx = (qId) => answers[qId];
-    const getScore = (qId) => {
-      const idx = getIdx(qId);
-      if (idx === undefined) return 0;
-      return QUESTIONS.find(q => q.id === qId).options[idx].score;
-    };
-
-    const breakoutScore = getScore("q1") * 2 + getScore("q2") * 1.5 + getScore("q7") * 1.2 + getScore("q9") * 0.8;
-    const meanRevScore = getScore("q5") * 2 + getScore("q3") * 1.5 + getScore("q8") * 1.0 + getScore("q9") * 1.5;
-    const followScore = getScore("q4") * 2 + getScore("q6") * 1.5 + getScore("q1") * 0.5;
-
-    const setups = [
-      { name: "Breakout", key: "breakout", score: breakoutScore, color: C.accent, icon: Zap, desc: "Ausbruch über/unter ein getestetes Level mit Volumenbestätigung" },
-      { name: "Mean Reversion", key: "meanReversion", score: meanRevScore, color: C.green, icon: Activity, desc: "Rückkehr zum Mittelwert nach extremer Bewegung" },
-      { name: "Follow-Through", key: "followThrough", score: followScore, color: C.blue, icon: TrendingUp, desc: "Fortführung eines bestehenden Trends nach Pullback" },
-    ];
-    setups.sort((a, b) => b.score - a.score);
-    return setups;
-  }, [answers]);
-
-  const activeSetupKey = detectedSetup.length > 0 ? detectedSetup[0].key : "default";
-
-  // ── Score mit setup-spezifischer Gewichtung ──
+  // ── Score basierend auf gewaehltem Setup + Checkboxen ──
   const { totalScore, maxScore } = useMemo(() => {
-    let score = 0;
-    let max = 0;
-    QUESTIONS.filter(q => q.type === "choice").forEach(q => {
-      const w = q.weights[activeSetupKey] || q.weights.default;
-      max += w;
-      if (answers[q.id] !== undefined) {
-        score += q.options[answers[q.id]].score * w;
-      }
+    if (!activeSetup) return { totalScore: 0, maxScore: 100 };
+    let score = 0, max = 0;
+    activeSetup.criteria.forEach(c => {
+      max += c.weight;
+      if (checkedItems[c.autoKey]) score += c.weight;
     });
-    return { totalScore: Math.round(score), maxScore: max };
-  }, [answers, activeSetupKey]);
+    return { totalScore: score, maxScore: max };
+  }, [activeSetup, checkedItems]);
 
   const scorePct = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
 
@@ -710,19 +618,17 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
     }
   }, [ampelResult.ampel]);
 
-  // Dynamisches Risiko-Budget: gebundenes Risiko abziehen
   const gebundenesRisiko = portfolio.offenRisiko;
   const verfuegbaresRisiko = Math.max(0, kontostand * (positionAdvice.riskPct / 100) - gebundenesRisiko);
   const effektiverMaxVerlust = Math.min(userMaxVerlust, verfuegbaresRisiko);
   const empfPositionSize = risikoProAktieEur > 0 ? Math.floor(effektiverMaxVerlust / risikoProAktieEur) : 0;
   const empfEinsatz = toEur(empfPositionSize * einstieg);
   const empfRisiko = empfPositionSize * risikoProAktieEur;
-
-  // ── Min CRV ampel-basiert ──
   const minCrv = ampelResult.ampel === "GRÜN" ? 1.5 : ampelResult.ampel === "ORANGE" ? 2.0 : ampelResult.ampel === "ROT" ? 3.0 : Infinity;
 
   const reset = () => {
-    setStep(0); setAnswers({}); setTradeAdded(false); setManualOverrides({});
+    setStep(0); setCheckedItems({}); setSelectedSetup(null); setExpandedSetup(null);
+    setTradeAdded(false);
     setInputs({ symbol: "", waehrung: "EUR", kontostand: String(Math.round(portfolio.kapital * 100) / 100), risikoPct: "1", wechselkurs: "", einstieg: "", stopLoss: "", ziel: "" });
     setAddInputs({ stueckzahl: "", kaufkurs: "", datum: new Date().toISOString().split("T")[0] });
     setFxDate("");
@@ -755,7 +661,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
         symbol: inputs.symbol.toUpperCase(),
         stopLoss: slEur,
         ziel: zielEur,
-        setup: detectedSetup[0].name,
+        setup: activeSetup?.label || "Unbekannt",
         score: totalScore,
         ampel,
         historical: false,
@@ -786,14 +692,14 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
           <div style={{ height: "100%", borderRadius: 2, background: `linear-gradient(90deg, ${C.accent}, ${C.accentLight})`, width: `${progressPct}%`, transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)" }} />
         </div>
         <div style={{ display: "flex", gap: 4, marginTop: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          {QUESTIONS.map((q, i) => (
-            <div key={i} onClick={() => { if (i <= step) setStep(i); }} style={{
-              width: i === step ? 24 : 8, height: 8, borderRadius: 4, cursor: i <= step ? "pointer" : "default",
-              background: i < step ? C.accent : i === step ? C.accentLight : C.border,
-              transition: "all 0.3s", opacity: i > step ? 0.4 : 1,
+          {["Basisdaten", "Merkmalliste", "Ergebnis"].map((_, i) => (
+            <div key={i} onClick={() => { if (i < step) setStep(i); }} style={{
+              width: (showResults ? i === 2 : i === step) ? 24 : 8, height: 8, borderRadius: 4,
+              cursor: i < step ? "pointer" : "default",
+              background: i < step ? C.accent : (showResults && i === 2) ? C.green : (i === step && !showResults) ? C.accentLight : C.border,
+              transition: "all 0.3s", opacity: (showResults ? true : i <= step) ? 1 : 0.4,
             }} />
           ))}
-          <div style={{ width: showResults ? 24 : 8, height: 8, borderRadius: 4, background: showResults ? C.green : C.border, transition: "all 0.3s", opacity: showResults ? 1 : 0.4 }} />
         </div>
       </div>
 
@@ -990,13 +896,13 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
               disabled={autoLoading}
               style={{
                 width: "100%", padding: "14px 20px", borderRadius: 12, cursor: autoLoading ? "wait" : "pointer",
-                background: autoScores
+                background: merkmalResults
                   ? `linear-gradient(135deg, ${C.green}20, ${C.green}08)`
                   : `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`,
-                color: autoScores ? C.green : "#fff",
+                color: merkmalResults ? C.green : "#fff",
                 fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
                 transition: "all 0.3s", opacity: autoLoading ? 0.7 : 1,
-                border: autoScores ? `1px solid ${C.green}30` : "none",
+                border: merkmalResults ? `1px solid ${C.green}30` : "none",
               }}
             >
               {autoLoading ? (
@@ -1004,7 +910,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
                   <div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
                   Analysiere Marktdaten fuer {inputs.symbol.toUpperCase()}...
                 </>
-              ) : autoScores ? (
+              ) : merkmalResults ? (
                 <>
                   <CheckCircle size={16} />
                   Auto-Analyse abgeschlossen — erneut laden?
@@ -1019,7 +925,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
             <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
 
             {/* Auto-Score Ergebnis-Banner */}
-            {autoScores && dataTimestamp && (
+            {merkmalResults && dataTimestamp && (
               <div style={{
                 marginTop: 10, padding: "10px 14px", borderRadius: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
                 background: staleData ? `${C.yellow}08` : `${C.green}08`,
@@ -1073,138 +979,138 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
         </>
       )}
 
-      {/* ── CHOICE STEP ── */}
-      {!showResults && currentQ?.type === "choice" && (() => {
-        const activeWeight = currentQ.weights[activeSetupKey] || currentQ.weights.default;
-        return (
+      {/* ── MERKMALLISTE STEP ── */}
+      {step === 1 && !showResults && (
         <div style={{ animation: "fadeIn 0.4s ease-out" }}>
-          <GlassCard>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-              <div style={{ width: 48, height: 48, borderRadius: 14, background: `${currentQ.color}15`, border: `1px solid ${currentQ.color}30`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <currentQ.icon size={22} color={currentQ.color} />
+          <GlassCard style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <div style={{ width: 48, height: 48, borderRadius: 14, background: `${C.accent}15`, border: `1px solid ${C.accent}30`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Target size={22} color={C.accent} />
               </div>
               <div>
-                <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text }}>{currentQ.title}</div>
-                <div style={{ fontSize: 13, color: C.textMuted }}>{currentQ.subtitle}</div>
+                <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text }}>Merkmalliste</div>
+                <div style={{ fontSize: 13, color: C.textMuted }}>Setup-Typ waehlen und Kriterien pruefen</div>
               </div>
             </div>
-            <div style={{ fontSize: 11, color: C.textDim, fontWeight: 500, padding: "0 0 4px 60px", letterSpacing: "0.02em" }}>
-              Gewichtung: {activeWeight} von {maxScore} Punkten
-              {activeSetupKey !== "default" && (
-                <span style={{ marginLeft: 8, color: C.accent }}>
-                  (angepasst für {detectedSetup[0]?.name})
-                </span>
-              )}
-            </div>
+            {merkmalResults && (
+              <div style={{ padding: "8px 12px", borderRadius: 8, background: `${C.green}08`, border: `1px solid ${C.green}20`, fontSize: 12, color: C.green, display: "flex", alignItems: "center", gap: 6 }}>
+                <Zap size={12} /> Auto-Analyse aktiv — Kriterien vorausgefuellt
+              </div>
+            )}
           </GlassCard>
 
-          <div style={{ margin: "20px 0 10px", padding: "0 4px" }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: C.text, marginBottom: 6 }}>{currentQ.question}</div>
-            <div style={{ fontSize: 13, color: C.textDim, lineHeight: 1.6 }}>{currentQ.hint}</div>
-          </div>
-
-          {/* ── Auto-Score Info-Leiste ── */}
-          {autoScores?.[currentQ.id] && (
-            <div style={{
-              margin: "12px 0 4px", padding: "10px 14px", borderRadius: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-              background: manualOverrides[currentQ.id] ? `${C.accent}06` : `${C.blue}08`,
-              border: `1px solid ${manualOverrides[currentQ.id] ? C.accent : C.blue}20`,
-            }}>
-              <Zap size={13} color={manualOverrides[currentQ.id] ? C.accent : C.blue} />
-              <span style={{ fontSize: 12, color: manualOverrides[currentQ.id] ? C.accent : C.blue, fontWeight: 600 }}>
-                {manualOverrides[currentQ.id] ? "Manuell ueberschrieben" : "Auto-Analyse"}
-              </span>
-              <span style={{ fontSize: 11, color: C.textMuted }}>
-                {autoScores[currentQ.id].detail}
-              </span>
-              {autoScores[currentQ.id].confidence > 0 && (
-                <span style={{ fontSize: 10, color: C.textDim, marginLeft: "auto", padding: "2px 8px", borderRadius: 6, background: "rgba(10,13,17,0.4)" }}>
-                  {Math.round(autoScores[currentQ.id].confidence * 100)}% Konfidenz
-                </span>
-              )}
-            </div>
-          )}
-
-          {currentQ.patternReference && (
-            <div style={{ margin: "16px 0 6px", padding: 16, borderRadius: 12, background: "rgba(10,13,17,0.5)", border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                <Info size={14} /> Kerzenformationen — Referenz
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
-                {currentQ.patternReference.map(p => (
-                  <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, background: "rgba(20,24,32,0.6)" }}>
-                    <div style={{ flexShrink: 0 }}><CandleIcon type={p.icon} size={36} /></div>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
-                        {p.name}
-                        <span style={{ fontSize: 10, fontWeight: 600, marginLeft: 6, color: p.signal === "bullish" ? C.green : p.signal === "neutral" ? C.yellow : C.textDim }}>
-                          {p.signal === "bullish" ? "BULLISH" : p.signal === "neutral" ? "NEUTRAL" : ""}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: C.textDim, lineHeight: 1.4 }}>{p.desc}</div>
-                    </div>
+          {setupRankings.map(setup => {
+            const isSelected = selectedSetup === setup.key;
+            const isExpanded = expandedSetup === setup.key;
+            return (
+              <div key={setup.key} style={{ marginBottom: 12 }}>
+                <div
+                  onClick={() => { setSelectedSetup(setup.key); setExpandedSetup(isExpanded ? null : setup.key); }}
+                  style={{
+                    padding: "14px 18px", borderRadius: isExpanded ? "14px 14px 0 0" : 14, cursor: "pointer",
+                    background: isSelected ? `linear-gradient(135deg, ${setup.color}12, ${setup.color}06)` : "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
+                    border: `2px solid ${isSelected ? setup.color + "60" : C.border}`,
+                    borderBottom: isExpanded ? `1px solid ${C.border}` : undefined,
+                    transition: "all 0.25s", display: "flex", alignItems: "center", gap: 14,
+                  }}
+                >
+                  <span style={{ fontSize: 24 }}>{setup.emoji}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: isSelected ? C.text : C.textMuted }}>{setup.label}</div>
+                    <div style={{ fontSize: 12, color: C.textDim }}>{setup.desc}</div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
-            {currentQ.options.map((opt, i) => {
-              const selected = answers[currentQ.id] === i;
-              const displayScore = Math.round(opt.score * activeWeight);
-              return (
-                <div key={i} onClick={() => selectAnswer(currentQ.id, i)} style={{
-                  padding: isMobile ? "14px 16px" : "16px 20px", borderRadius: 14, cursor: "pointer",
-                  background: selected
-                    ? `linear-gradient(135deg, ${currentQ.color}12, ${currentQ.color}06)`
-                    : "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
-                  border: `2px solid ${selected ? currentQ.color + "60" : C.border}`,
-                  transition: "all 0.25s cubic-bezier(0.4,0,0.2,1)",
-                  transform: selected ? "scale(1.01)" : "scale(1)",
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 14 }}>
-                    {currentQ.candleIcons && opt.candle && (
-                      <div style={{ flexShrink: 0, opacity: selected ? 1 : 0.6 }}>
-                        <CandleIcon type={opt.candle} size={32} />
-                      </div>
-                    )}
-                    {!currentQ.candleIcons && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{
-                      width: 22, height: 22, borderRadius: 11, flexShrink: 0,
-                      border: `2px solid ${selected ? currentQ.color : C.borderLight}`,
-                      background: selected ? currentQ.color : "transparent",
-                      display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s",
+                      padding: "4px 10px", borderRadius: 8, fontSize: 14, fontWeight: 700,
+                      color: setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim,
+                      background: `${setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim}10`,
                     }}>
-                      {selected && <div style={{ width: 8, height: 8, borderRadius: 4, background: "#fff" }} />}
+                      {Math.round(setup.pct)}%
                     </div>
-                    )}
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: isMobile ? 14 : 15, fontWeight: 600, color: selected ? C.text : C.textMuted, marginBottom: 2 }}>{opt.label}</div>
-                      <div style={{ fontSize: 12, color: C.textDim }}>{opt.desc}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      {autoScores?.[currentQ.id]?.optionIndex === i && !manualOverrides[currentQ.id] && (
-                        <div style={{ padding: "3px 7px", borderRadius: 6, fontSize: 9, fontWeight: 700, color: C.blue, background: `${C.blue}15`, border: `1px solid ${C.blue}25`, letterSpacing: "0.05em" }}>
-                          AUTO
-                        </div>
-                      )}
-                      <div style={{
-                        padding: "4px 10px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                        color: opt.score >= 0.7 ? C.green : opt.score >= 0.4 ? C.orange : C.textDim,
-                        background: `${opt.score >= 0.7 ? C.green : opt.score >= 0.4 ? C.orange : C.textDim}10`,
-                      }}>
-                        +{displayScore}
+                    {isSelected && (
+                      <div style={{ padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, color: setup.color, background: `${setup.color}15`, border: `1px solid ${setup.color}25` }}>
+                        AKTIV
                       </div>
-                    </div>
+                    )}
+                    <ChevronDown size={16} color={C.textDim} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s" }} />
                   </div>
                 </div>
-              );
-            })}
-          </div>
+
+                {isExpanded && (
+                  <div style={{
+                    padding: "12px 18px", borderRadius: "0 0 14px 14px",
+                    background: "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
+                    border: `2px solid ${isSelected ? setup.color + "60" : C.border}`, borderTop: "none",
+                  }}>
+                    {setup.criteria.map((c, ci) => {
+                      const checked = !!checkedItems[c.autoKey];
+                      const autoResult = merkmalResults?.[c.autoKey];
+                      return (
+                        <div key={c.autoKey}
+                          onClick={() => setCheckedItems(prev => ({ ...prev, [c.autoKey]: !prev[c.autoKey] }))}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12, padding: "10px 8px",
+                            borderBottom: ci < setup.criteria.length - 1 ? `1px solid ${C.border}40` : "none",
+                            cursor: "pointer", transition: "background 0.15s",
+                          }}
+                        >
+                          <div style={{
+                            width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+                            border: `2px solid ${checked ? C.green : C.borderLight}`,
+                            background: checked ? C.green : "transparent",
+                            display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s",
+                          }}>
+                            {checked && <CheckCircle size={14} color="#fff" />}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 14, fontWeight: 600, color: checked ? C.text : C.textMuted }}>{c.label}</div>
+                            {autoResult && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>{autoResult.detail}</div>}
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: checked ? C.green : C.textDim, flexShrink: 0 }}>
+                            {checked ? `+${c.weight}` : c.weight}
+                          </div>
+                          {autoResult && (
+                            <div style={{
+                              padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700,
+                              color: autoResult.value ? C.green : C.red,
+                              background: `${autoResult.value ? C.green : C.red}12`,
+                            }}>
+                              {autoResult.value ? "AUTO" : "AUTO"}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {setup.invalidators?.length > 0 && (
+                      <div style={{ marginTop: 8, padding: "8px 0" }}>
+                        {setup.invalidators.map(inv => {
+                          const triggered = inv.inverted ? !checkedItems[inv.autoKey] : !!checkedItems[inv.autoKey];
+                          return (
+                            <div key={inv.autoKey + "-inv"} style={{
+                              display: "flex", alignItems: "center", gap: 8, padding: "8px",
+                              borderRadius: 8, background: triggered ? `${C.red}10` : "transparent",
+                            }}>
+                              <XCircle size={14} color={triggered ? C.red : C.textDim} />
+                              <span style={{ fontSize: 12, fontWeight: 600, color: triggered ? C.red : C.textDim }}>{inv.label}</span>
+                              {triggered && <span style={{ fontSize: 11, color: C.red, marginLeft: "auto", fontWeight: 700 }}>INVALIDIERT</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: `${setup.color}08`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: setup.color }}>Score: {setup.matched}/{setup.total}</span>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim }}>{Math.round(setup.pct)}%</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-        );
-      })()}
+      )}
 
       {/* ── RESULTS ── */}
       {showResults && (
@@ -1310,58 +1216,55 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
 
           {/* Setup-Kategorisierung */}
           <GlassCard>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 4 }}>Erkannter Trade-Typ</div>
-            <div style={{ fontSize: 13, color: C.textDim, marginBottom: 20 }}>Basierend auf deinen Antworten passt der Trade am besten zu:</div>
-            {detectedSetup.map((s, i) => {
-              const best = i === 0;
-              const Icon = s.icon;
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 4 }}>Setup-Ranking</div>
+            <div style={{ fontSize: 13, color: C.textDim, marginBottom: 20 }}>Basierend auf der Merkmalliste:</div>
+            {setupRankings.map((s, i) => {
+              const best = s.key === selectedSetup;
               return (
-                <div key={s.name} style={{
+                <div key={s.key} style={{
                   padding: isMobile ? "12px 14px" : "14px 18px", borderRadius: 12, marginBottom: 10,
                   background: best ? `${s.color}10` : "rgba(10,13,17,0.3)",
                   border: `2px solid ${best ? s.color + "50" : C.border}`,
                   display: "flex", alignItems: "center", gap: isMobile ? 10 : 14, transition: "all 0.3s",
                 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: `${s.color}18`, border: `1px solid ${s.color}30`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <Icon size={18} color={s.color} />
-                  </div>
+                  <span style={{ fontSize: 28 }}>{s.emoji}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: best ? C.text : C.textMuted }}>{s.name}</span>
-                      {best && <Badge color={s.color}>Beste Übereinstimmung</Badge>}
+                      <span style={{ fontSize: 15, fontWeight: 700, color: best ? C.text : C.textMuted }}>{s.label}</span>
+                      {best && <Badge color={s.color}>Gewaehlt</Badge>}
                     </div>
                     {!isMobile && <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{s.desc}</div>}
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: best ? s.color : C.textDim, flexShrink: 0 }}>{s.score.toFixed(0)} Pkt.</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: best ? s.color : C.textDim, flexShrink: 0 }}>{Math.round(s.pct)}%</div>
                 </div>
               );
             })}
           </GlassCard>
 
-          {/* Antworten-Übersicht */}
+          {/* Kriterien-Uebersicht */}
+          {activeSetup && (
           <GlassCard>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 16 }}>Deine Bewertungen</div>
-            {QUESTIONS.filter(q => q.type === "choice").map(q => {
-              const aIdx = answers[q.id];
-              const opt = aIdx !== undefined ? q.options[aIdx] : null;
-              const activeW = q.weights[activeSetupKey] || q.weights.default;
-              const achievedScore = opt ? Math.round(opt.score * activeW) : 0;
-              const pct = opt ? (opt.score * 100) : 0;
-              const barColor = pct >= 70 ? C.green : pct >= 40 ? C.orange : C.red;
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 16 }}>
+              {activeSetup.emoji} {activeSetup.label} — Kriterien
+            </div>
+            {activeSetup.criteria.map(c => {
+              const checked = !!checkedItems[c.autoKey];
+              const pct = checked ? 100 : 0;
+              const barColor = checked ? C.green : C.red;
               return (
-                <div key={q.id} style={{ marginBottom: 14 }}>
+                <div key={c.autoKey} style={{ marginBottom: 14 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                    <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{q.title}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: barColor }}>{achievedScore}/{activeW}</span>
+                    <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{c.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: barColor }}>{checked ? c.weight : 0}/{c.weight}</span>
                   </div>
                   <div style={{ height: 6, borderRadius: 3, background: C.border, overflow: "hidden" }}>
                     <div style={{ height: "100%", borderRadius: 3, width: `${pct}%`, background: `linear-gradient(90deg, ${barColor}, ${barColor}AA)`, transition: "width 0.6s" }} />
                   </div>
-                  {opt && <div style={{ fontSize: 11, color: C.textDim, marginTop: 3 }}>{opt.label}</div>}
                 </div>
               );
             })}
           </GlassCard>
+          )}
 
           {/* ── Trade-Übernahme ins Journal ── */}
           {ampel !== "NICHT TRADEN" && inputs.symbol && !tradeAdded && (
@@ -1375,7 +1278,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 20 }}>
                 {[
                   { label: "Symbol", value: inputs.symbol.toUpperCase() },
-                  { label: "Setup", value: detectedSetup[0]?.name },
+                  { label: "Setup", value: activeSetup?.label || "—" },
                   { label: "Ampel", value: ampel, color: scoreColor },
                   { label: "CRV", value: fmt(crv, 1) + "x" },
                   { label: "Einstieg", value: isUsd ? `€${fmt(einstieg * wechselkurs)}` : `€${fmt(einstieg)}`, sub: isUsd ? `($${fmt(einstieg)})` : null },
@@ -1488,7 +1391,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
             transition: "all 0.2s", boxShadow: canProceed ? `0 4px 20px ${C.accent}40` : "none",
             opacity: canProceed ? 1 : 0.5,
           }}>
-            {step === totalSteps - 1 ? "Ergebnis anzeigen" : "Weiter"}
+            {step === 1 ? "Ergebnis anzeigen" : "Weiter"}
             <ChevronRight size={16} />
           </button>
         )}
@@ -1586,7 +1489,9 @@ const Dashboard = ({ portfolio }) => {
 // ════════════════════════════════════════════════════════════════
 // ─── TRADE LOG ───
 // ════════════════════════════════════════════════════════════════
-const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
+const SETUP_OPTIONS = ["Trend-Pullback", "Breakout", "Range", "Bounce", "Manuell"];
+
+const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
   const [filter, setFilter] = useState("Alle");
   const [expandedId, setExpandedId] = useState(null);
   const [txModal, setTxModal] = useState(null); // { tradeId, type: "sell"|"buy" }
@@ -1594,8 +1499,73 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
   const [editModal, setEditModal] = useState(null); // trade object being edited
   const [editInputs, setEditInputs] = useState({});
   const [deleteConfirm, setDeleteConfirm] = useState(null); // tradeId awaiting delete confirmation
+  const [newTradeModal, setNewTradeModal] = useState(false);
+  const [newTradeInputs, setNewTradeInputs] = useState({
+    symbol: "", waehrung: "EUR", wechselkurs: "", setup: "Manuell", botScore: "",
+    stopLoss: "", ziel: "", datum: new Date().toISOString().split("T")[0], stueckzahl: "", kaufkurs: "",
+  });
+  const [screenshotUrls, setScreenshotUrls] = useState({}); // { tradeId: objectUrl }
+  const [screenshotViewer, setScreenshotViewer] = useState(null); // objectUrl for fullscreen
+  const [pendingScreenshot, setPendingScreenshot] = useState(null); // File for new/edit trade
   const ww = useWindowWidth();
   const isMobile = ww < 600;
+
+  // Load screenshot thumbnails for trades that have screenshotId
+  useEffect(() => {
+    let cancelled = false;
+    const loadUrls = async () => {
+      const urls = {};
+      for (const t of tradeList) {
+        if (t.screenshotId) {
+          try {
+            const url = await getScreenshotUrl(t.screenshotId);
+            if (url && !cancelled) urls[t.id] = url;
+          } catch {}
+        }
+      }
+      if (!cancelled) setScreenshotUrls(urls);
+    };
+    loadUrls();
+    return () => { cancelled = true; };
+  }, [tradeList]);
+
+  const handleNewTradeSave = async () => {
+    const sl = parseFloat(newTradeInputs.stopLoss);
+    const z = parseFloat(newTradeInputs.ziel);
+    const stueck = parseInt(newTradeInputs.stueckzahl);
+    const kk = parseFloat(newTradeInputs.kaufkurs);
+    if (!newTradeInputs.symbol.trim() || !sl || !z || !stueck || !kk) return;
+    const isUsd = newTradeInputs.waehrung === "USD";
+    const fx = parseFloat(newTradeInputs.wechselkurs) || 0.93;
+    const slEur = isUsd ? Math.round(sl * fx * 100) / 100 : sl;
+    const zielEur = isUsd ? Math.round(z * fx * 100) / 100 : z;
+    const kkEur = isUsd ? Math.round(kk * fx * 100) / 100 : kk;
+    const botScore = parseInt(newTradeInputs.botScore) || 0;
+    const ampel = botScore >= 78 ? "GRÜN" : botScore >= 55 ? "ORANGE" : botScore >= 35 ? "ROT" : botScore > 0 ? "NICHT TRADEN" : "MANUELL";
+    const tradeId = Date.now();
+    let screenshotId = undefined;
+    if (pendingScreenshot) {
+      try { await saveScreenshot(tradeId, pendingScreenshot); screenshotId = String(tradeId); } catch {}
+    }
+    const newTrade = {
+      id: tradeId,
+      symbol: newTradeInputs.symbol.toUpperCase().trim(),
+      stopLoss: slEur, ziel: zielEur,
+      setup: newTradeInputs.setup,
+      score: botScore,
+      ampel,
+      historical: false,
+      waehrung: "EUR",
+      ...(botScore > 0 && { botScore, botSetup: newTradeInputs.setup }),
+      ...(isUsd && { originalWaehrung: "USD", usdWechselkurs: fx }),
+      ...(screenshotId && { screenshotId }),
+      transactions: [{ type: "buy", datum: newTradeInputs.datum, stueck, kurs: kkEur }],
+    };
+    onAddTrade(newTrade);
+    setNewTradeModal(false);
+    setPendingScreenshot(null);
+    setNewTradeInputs({ symbol: "", waehrung: "EUR", wechselkurs: "", setup: "Manuell", botScore: "", stopLoss: "", ziel: "", datum: new Date().toISOString().split("T")[0], stueckzahl: "", kaufkurs: "" });
+  };
 
   const enriched = useMemo(() => tradeList.map(t => {
     const props = tradeComputedProps(t);
@@ -1641,6 +1611,8 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
       ziel: wasUsd ? String(Math.round(trade.ziel / fx * 100) / 100) : String(trade.ziel),
       waehrung: wasUsd ? "USD" : (trade.originalWaehrung || trade.waehrung || "EUR"),
       wechselkurs: fx ? String(fx) : "",
+      botScore: trade.botScore != null ? String(trade.botScore) : "",
+      botSetup: trade.botSetup || trade.setup || "",
       // Transaktions-Kurse ebenfalls zurueckrechnen bei USD-Trades
       transactions: (trade.transactions || []).map(tx => ({
         ...tx,
@@ -1650,7 +1622,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
     });
   };
 
-  const handleEditSave = () => {
+  const handleEditSave = async () => {
     if (!editModal) return;
     const sl = parseFloat(editInputs.stopLoss);
     const z = parseFloat(editInputs.ziel);
@@ -1665,6 +1637,17 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
         kurs: editIsUsd ? Math.round(parseFloat(tx.kurs) * editFx * 100) / 100 : parseFloat(tx.kurs),
         stueck: parseInt(tx.stueck),
       }));
+    // Bot-Score Felder
+    const editBotScore = parseInt(editInputs.botScore) || 0;
+    const editBotSetup = editInputs.botSetup || undefined;
+    // Screenshot handling
+    let newScreenshotId = editModal.screenshotId;
+    if (pendingScreenshot) {
+      try { await saveScreenshot(editModal.id, pendingScreenshot); newScreenshotId = String(editModal.id); } catch {}
+    } else if (editModal._removeScreenshot) {
+      try { await deleteScreenshot(editModal.screenshotId); } catch {}
+      newScreenshotId = undefined;
+    }
     // Immer in EUR speichern
     onUpdateTrade(editModal.id, (t) => ({
       ...t,
@@ -1674,7 +1657,11 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
       waehrung: "EUR",
       ...(cleanTx.length > 0 ? { transactions: cleanTx } : {}),
       ...(editIsUsd ? { originalWaehrung: "USD", usdWechselkurs: editFx } : { originalWaehrung: undefined, usdWechselkurs: undefined }),
+      botScore: editBotScore > 0 ? editBotScore : undefined,
+      botSetup: editBotSetup,
+      screenshotId: newScreenshotId,
     }));
+    setPendingScreenshot(null);
     setEditModal(null);
   };
 
@@ -1719,22 +1706,244 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
   };
 
   const handleDelete = (id) => {
+    const trade = tradeList.find(t => t.id === id);
+    if (trade?.screenshotId) deleteScreenshot(trade.screenshotId).catch(() => {});
     onDeleteTrade(id);
     setDeleteConfirm(null);
   };
 
+  // ─── Bot-Score Import via Paste ───
+  const [importModal, setImportModal] = useState(null); // { tradeId } or null
+  const [importText, setImportText] = useState("");
+  const [importParsed, setImportParsed] = useState(null);
+
+  const parseTelegramAlert = (text) => {
+    try {
+      // Symbol: first word after 🟢 or 🔴, e.g. "🟢 SAP"
+      const symbolMatch = text.match(/[🟢🔴]\s*(\w+)/);
+      // Score: number after setup label, e.g. "Trend-Pullback 85"
+      const scoreMatch = text.match(/(?:Trend-Pullback|Breakout|Range|Bounce|GENERAL)\s+(\d+)/i);
+      // Setup type
+      const setupMatch = text.match(/(Trend-Pullback|Breakout|Range|Bounce)/i);
+      // Entry price: "Entry PRICE" pattern
+      const entryMatch = text.match(/Entry\s+([\d.,]+)/i);
+      // Stop: "Stop PRICE" pattern
+      const stopMatch = text.match(/Stop\s+([\d.,]+)/i);
+      // Target: "Ziel PRICE" pattern
+      const targetMatch = text.match(/Ziel\s+([\d.,]+)/i);
+      if (!symbolMatch && !scoreMatch) return null;
+      const parseNum = (s) => s ? parseFloat(s.replace(",", ".")) : undefined;
+      return {
+        symbol: symbolMatch?.[1]?.toUpperCase(),
+        score: scoreMatch ? parseInt(scoreMatch[1]) : undefined,
+        setup: setupMatch ? setupMatch[1] : undefined,
+        entry: parseNum(entryMatch?.[1]),
+        stop: parseNum(stopMatch?.[1]),
+        target: parseNum(targetMatch?.[1]),
+      };
+    } catch { return null; }
+  };
+
+  const handleImportParse = () => {
+    const parsed = parseTelegramAlert(importText);
+    setImportParsed(parsed);
+  };
+
+  const handleImportApply = () => {
+    if (!importModal || !importParsed) return;
+    const { score, setup, stop, target } = importParsed;
+    onUpdateTrade(importModal.tradeId, (t) => ({
+      ...t,
+      ...(score && { botScore: score, botSetup: setup || t.botSetup }),
+      ...(stop && { stopLoss: stop }),
+      ...(target && { ziel: target }),
+    }));
+    setImportModal(null);
+    setImportText("");
+    setImportParsed(null);
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {["Alle", "Offen", "GRÜN", "ORANGE", "ROT", "NICHT TRADEN"].map(f => (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        {["Alle", "Offen", "GRÜN", "ORANGE", "ROT", "MANUELL", "NICHT TRADEN"].map(f => (
           <button key={f} onClick={() => setFilter(f)} style={{
             padding: "7px 16px", borderRadius: 8, border: `1px solid ${filter === f ? C.accent : C.border}`,
             background: filter === f ? `${C.accent}15` : "transparent",
-            color: f === "GRÜN" ? C.green : f === "ORANGE" ? C.orange : f === "ROT" ? C.red : f === "NICHT TRADEN" ? C.noTrade : filter === f ? C.accentLight : C.textMuted,
+            color: f === "GRÜN" ? C.green : f === "ORANGE" ? C.orange : f === "ROT" ? C.red : f === "MANUELL" ? C.blue : f === "NICHT TRADEN" ? C.noTrade : filter === f ? C.accentLight : C.textMuted,
             fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.2s",
           }}>{f === "Alle" ? `Alle (${tradeList.length})` : f}</button>
         ))}
+        {onAddTrade && (
+          <button onClick={() => setNewTradeModal(true)} style={{
+            marginLeft: "auto", padding: "7px 14px", borderRadius: 8,
+            border: `1px solid ${C.accent}40`, background: `linear-gradient(135deg, ${C.accent}20, ${C.accentLight}10)`,
+            color: C.accentLight, fontSize: 12, fontWeight: 700, cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 5, transition: "all 0.2s",
+          }}>
+            <Plus size={14} /> Neuer Trade
+          </button>
+        )}
       </div>
+
+      {/* Neuer Trade Modal */}
+      {newTradeModal && (
+        <GlassCard style={{ marginBottom: 20, border: `2px solid ${C.accent}40` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <Plus size={18} color={C.accent} />
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Neuer Trade</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Symbol *</label>
+              <input type="text" value={newTradeInputs.symbol} onChange={e => setNewTradeInputs(p => ({ ...p, symbol: e.target.value }))} placeholder="z.B. SAP"
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", textTransform: "uppercase" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Setup</label>
+              <select value={newTradeInputs.setup} onChange={e => setNewTradeInputs(p => ({ ...p, setup: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", appearance: "none", WebkitAppearance: "none" }}>
+                {SETUP_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Score (optional)</label>
+              <input type="number" min="0" max="100" value={newTradeInputs.botScore} onChange={e => setNewTradeInputs(p => ({ ...p, botScore: e.target.value }))} placeholder="0-100"
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Waehrung</label>
+              <div style={{ display: "flex", gap: 0, borderRadius: 10, overflow: "hidden", border: `1px solid ${C.border}` }}>
+                {["EUR", "USD"].map(w => (
+                  <button key={w} onClick={() => setNewTradeInputs(p => ({ ...p, waehrung: w }))} style={{
+                    flex: 1, padding: "10px 0", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600,
+                    background: newTradeInputs.waehrung === w ? `${C.accent}20` : "rgba(10,13,17,0.6)",
+                    color: newTradeInputs.waehrung === w ? C.accentLight : C.textDim,
+                    borderRight: w === "EUR" ? `1px solid ${C.border}` : "none",
+                  }}>{w}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+          {newTradeInputs.waehrung === "USD" && (
+            <div style={{ marginTop: 12 }}>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Wechselkurs (1$ = x€)</label>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input type="number" value={newTradeInputs.wechselkurs} onChange={e => setNewTradeInputs(p => ({ ...p, wechselkurs: e.target.value }))} placeholder="0.93"
+                  style={{ width: isMobile ? "100%" : "200px", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+                <button onClick={async () => { try { const r = await fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR"); const d = await r.json(); if (d?.rates?.EUR) setNewTradeInputs(p => ({ ...p, wechselkurs: String(d.rates.EUR) })); } catch {} }} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${C.accent}40`, background: `${C.accent}10`, color: C.accentLight, fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  Live-Kurs
+                </button>
+              </div>
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Stop-Loss {newTradeInputs.waehrung === "USD" ? "($)" : "(€)"} *</label>
+              <input type="number" step="0.01" value={newTradeInputs.stopLoss} onChange={e => setNewTradeInputs(p => ({ ...p, stopLoss: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Zielkurs {newTradeInputs.waehrung === "USD" ? "($)" : "(€)"} *</label>
+              <input type="number" step="0.01" value={newTradeInputs.ziel} onChange={e => setNewTradeInputs(p => ({ ...p, ziel: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 16, paddingTop: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 10 }}>Erste Transaktion</div>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Datum</label>
+                <input type="date" value={newTradeInputs.datum} onChange={e => setNewTradeInputs(p => ({ ...p, datum: e.target.value }))}
+                  style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", colorScheme: "dark" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Stueckzahl *</label>
+                <input type="number" value={newTradeInputs.stueckzahl} onChange={e => setNewTradeInputs(p => ({ ...p, stueckzahl: e.target.value }))}
+                  style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Kaufkurs {newTradeInputs.waehrung === "USD" ? "($)" : "(€)"} *</label>
+                <input type="number" step="0.01" value={newTradeInputs.kaufkurs} onChange={e => setNewTradeInputs(p => ({ ...p, kaufkurs: e.target.value }))}
+                  style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+              </div>
+            </div>
+          </div>
+          {/* Screenshot Upload */}
+          <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10 }}>
+            <label style={{ padding: "8px 14px", borderRadius: 8, border: `1px dashed ${C.border}`, background: "rgba(10,13,17,0.4)", color: C.textMuted, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <Camera size={14} /> {pendingScreenshot ? pendingScreenshot.name : "Screenshot hinzufuegen"}
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) setPendingScreenshot(e.target.files[0]); }} />
+            </label>
+            {pendingScreenshot && (
+              <button onClick={() => setPendingScreenshot(null)} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.red}15`, color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Entfernen</button>
+            )}
+          </div>
+          {/* Preview */}
+          {newTradeInputs.symbol && parseFloat(newTradeInputs.stopLoss) > 0 && parseFloat(newTradeInputs.kaufkurs) > 0 && (
+            <div style={{ marginTop: 14, padding: "10px 14px", borderRadius: 10, background: `${C.accent}08`, border: `1px solid ${C.accent}15`, display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12, color: C.textMuted }}>
+              <span>CRV: <strong style={{ color: C.text }}>{((parseFloat(newTradeInputs.ziel) - parseFloat(newTradeInputs.kaufkurs)) / Math.abs(parseFloat(newTradeInputs.kaufkurs) - parseFloat(newTradeInputs.stopLoss))).toFixed(1)}:1</strong></span>
+              <span>Risiko/Stk: <strong style={{ color: C.red }}>{Math.abs(parseFloat(newTradeInputs.kaufkurs) - parseFloat(newTradeInputs.stopLoss)).toFixed(2)}</strong></span>
+              <span>Ampel: <strong style={{ color: ampelColor(parseInt(newTradeInputs.botScore) >= 78 ? "GRÜN" : parseInt(newTradeInputs.botScore) >= 55 ? "ORANGE" : parseInt(newTradeInputs.botScore) >= 35 ? "ROT" : parseInt(newTradeInputs.botScore) > 0 ? "NICHT TRADEN" : "MANUELL") }}>{parseInt(newTradeInputs.botScore) >= 78 ? "GRÜN" : parseInt(newTradeInputs.botScore) >= 55 ? "ORANGE" : parseInt(newTradeInputs.botScore) >= 35 ? "ROT" : parseInt(newTradeInputs.botScore) > 0 ? "NICHT TRADEN" : "MANUELL"}</strong></span>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button onClick={handleNewTradeSave} style={{ flex: 1, padding: "10px 20px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Save size={15} /> Trade anlegen
+            </button>
+            <button onClick={() => setNewTradeModal(false)} style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Abbrechen
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Bot-Score Import Modal */}
+      {importModal && (
+        <GlassCard style={{ marginBottom: 20, border: `2px solid ${C.yellow}40` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <Zap size={18} color={C.yellow} />
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>Bot-Score importieren — {tradeList.find(t => t.id === importModal.tradeId)?.symbol}</div>
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Telegram Alert einfuegen</label>
+            <textarea value={importText} onChange={e => { setImportText(e.target.value); setImportParsed(null); }}
+              placeholder="Telegram Bot Alert hier einfuegen..."
+              rows={5} style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box", resize: "vertical" }} />
+          </div>
+          {importText.trim() && !importParsed && (
+            <button onClick={handleImportParse} style={{ marginTop: 10, padding: "8px 16px", borderRadius: 8, border: `1px solid ${C.yellow}40`, background: `${C.yellow}10`, color: C.yellow, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              Analysieren
+            </button>
+          )}
+          {importParsed && (
+            <div style={{ marginTop: 12, padding: "12px 16px", borderRadius: 10, background: `${C.green}08`, border: `1px solid ${C.green}20` }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.green, marginBottom: 8 }}>Erkannte Werte:</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, fontSize: 12, color: C.textMuted }}>
+                {importParsed.symbol && <span>Symbol: <strong style={{ color: C.text }}>{importParsed.symbol}</strong></span>}
+                {importParsed.score && <span>Score: <strong style={{ color: C.text }}>{importParsed.score}</strong></span>}
+                {importParsed.setup && <span>Setup: <strong style={{ color: C.text }}>{importParsed.setup}</strong></span>}
+                {importParsed.entry && <span>Entry: <strong style={{ color: C.text }}>{importParsed.entry}</strong></span>}
+                {importParsed.stop && <span>Stop: <strong style={{ color: C.text }}>{importParsed.stop}</strong></span>}
+                {importParsed.target && <span>Ziel: <strong style={{ color: C.text }}>{importParsed.target}</strong></span>}
+              </div>
+            </div>
+          )}
+          {importParsed === null && importText.trim() && (
+            <div style={{ marginTop: 8, fontSize: 12, color: C.red }}>Text konnte nicht analysiert werden.</div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            {importParsed && (
+              <button onClick={handleImportApply} style={{ flex: 1, padding: "10px 20px", borderRadius: 10, border: "none", background: `linear-gradient(135deg, ${C.accent}, ${C.accentLight})`, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>
+                Uebernehmen
+              </button>
+            )}
+            <button onClick={() => { setImportModal(null); setImportText(""); setImportParsed(null); }} style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Abbrechen
+            </button>
+          </div>
+        </GlassCard>
+      )}
 
       {/* Teilverkauf/Nachkauf Modal */}
       {txModal && (
@@ -1814,6 +2023,22 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
               </div>
             </div>
           </div>
+          {/* Bot-Score & Setup */}
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Score (optional)</label>
+              <input type="number" min="0" max="100" value={editInputs.botScore} onChange={e => setEditInputs(p => ({ ...p, botScore: e.target.value }))} placeholder="0-100"
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Setup</label>
+              <select value={editInputs.botSetup} onChange={e => setEditInputs(p => ({ ...p, botSetup: e.target.value }))}
+                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", appearance: "none", WebkitAppearance: "none" }}>
+                <option value="">—</option>
+                {SETUP_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
           {editInputs.waehrung === "USD" && (
             <div style={{ marginTop: 12 }}>
               <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Wechselkurs (1$ = x€)</label>
@@ -1829,6 +2054,19 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
               </div>
             </div>
           )}
+          {/* Screenshot */}
+          <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10 }}>
+            <label style={{ padding: "8px 14px", borderRadius: 8, border: `1px dashed ${C.border}`, background: "rgba(10,13,17,0.4)", color: C.textMuted, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+              <Camera size={14} /> {pendingScreenshot ? pendingScreenshot.name : editModal?.screenshotId ? "Screenshot ersetzen" : "Screenshot hinzufuegen"}
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) setPendingScreenshot(e.target.files[0]); }} />
+            </label>
+            {(pendingScreenshot || editModal?.screenshotId) && (
+              <button onClick={() => { setPendingScreenshot(null); if (editModal?.screenshotId) setEditModal(m => ({ ...m, screenshotId: null, _removeScreenshot: true })); }} style={{ padding: "4px 8px", borderRadius: 6, border: "none", background: `${C.red}15`, color: C.red, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Entfernen</button>
+            )}
+            {editModal?.screenshotId && screenshotUrls[editModal.id] && !pendingScreenshot && (
+              <img src={screenshotUrls[editModal.id]} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover", border: `1px solid ${C.border}`, cursor: "pointer" }} onClick={() => setScreenshotViewer(screenshotUrls[editModal.id])} />
+            )}
+          </div>
           {/* Transaktionen bearbeiten */}
           <div style={{ marginTop: 16, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 10 }}>Transaktionen</div>
@@ -1921,8 +2159,16 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
                       </td>
                       <td style={{ padding: "10px 12px", color: C.textMuted, fontSize: 12, whiteSpace: "nowrap" }}>{t.datum}</td>
                       <td style={{ padding: "10px 12px" }}>
-                        <span style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{t.symbol}</span>
-                        <span style={{ fontSize: 10, color: C.textDim, marginLeft: 6, fontWeight: 600 }}>{t.originalWaehrung === "USD" ? "USD→EUR" : "EUR"}</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          {screenshotUrls[t.id] && (
+                            <img src={screenshotUrls[t.id]} alt="" onClick={e => { e.stopPropagation(); setScreenshotViewer(screenshotUrls[t.id]); }}
+                              style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover", border: `1px solid ${C.border}`, cursor: "pointer", flexShrink: 0 }} />
+                          )}
+                          <div>
+                            <span style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{t.symbol}</span>
+                            <span style={{ fontSize: 10, color: C.textDim, marginLeft: 6, fontWeight: 600 }}>{t.originalWaehrung === "USD" ? "USD→EUR" : "EUR"}</span>
+                          </div>
+                        </div>
                       </td>
                       <td style={{ padding: "10px 12px" }}><Badge color={C.blue}>{t.setup}</Badge></td>
                       <td style={{ padding: "10px 12px", color: C.text, fontWeight: 500 }}>€{fmt(t.avgKaufkurs)}</td>
@@ -1936,7 +2182,9 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
                       </td>
                       <td style={{ padding: "10px 12px", fontWeight: 700, color: t.totalSold === 0 ? C.textDim : t.rValue >= 0 ? C.green : C.red }}>{t.totalSold > 0 ? `${t.rValue >= 0 ? "+" : ""}${t.rValue.toFixed(1)}R` : "–"}</td>
                       <td style={{ padding: "10px 12px" }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 36, height: 24, borderRadius: 6, fontSize: 12, fontWeight: 700, color: ampelColor(t.ampel), background: ampelBg(t.ampel), border: `1px solid ${ampelBorder(t.ampel)}` }}>{t.score}</div>
+                        <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 36, height: 24, borderRadius: 6, fontSize: 12, fontWeight: 700, color: ampelColor(t.ampel), background: ampelBg(t.ampel), border: `1px solid ${ampelBorder(t.ampel)}`, padding: "0 6px" }}>
+                          {t.botScore && t.botScore !== t.score ? `${t.score} | ${t.botScore}` : t.score}
+                        </div>
                       </td>
                       <td style={{ padding: "10px 12px" }} onClick={e => e.stopPropagation()}>
                         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
@@ -1949,6 +2197,9 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
                           {t.remaining === 0 && (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 600, color: C.textDim, background: "rgba(10,13,17,0.4)" }}>Geschl.</span>
                           )}
+                          <button onClick={() => { setImportModal({ tradeId: t.id }); setImportText(""); setImportParsed(null); }} title="Bot importieren" style={{ padding: "4px 6px", borderRadius: 6, border: "none", background: `${C.yellow}12`, color: C.yellow, cursor: "pointer", display: "flex", alignItems: "center" }}>
+                            <Zap size={13} />
+                          </button>
                           <button onClick={() => openEdit(t)} title="Bearbeiten" style={{ padding: "4px 6px", borderRadius: 6, border: "none", background: `${C.accent}15`, color: C.accentLight, cursor: "pointer", display: "flex", alignItems: "center" }}>
                             <Edit3 size={13} />
                           </button>
@@ -1979,6 +2230,22 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade }) => {
           </table>
         </div>
       </GlassCard>
+
+      {/* Screenshot Fullscreen Viewer */}
+      {screenshotViewer && (
+        <div onClick={() => setScreenshotViewer(null)} style={{
+          position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.85)",
+          display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out",
+          backdropFilter: "blur(8px)",
+        }}>
+          <img src={screenshotViewer} alt="Screenshot" style={{ maxWidth: "95vw", maxHeight: "90vh", borderRadius: 12, boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }} />
+          <button onClick={() => setScreenshotViewer(null)} style={{
+            position: "absolute", top: 20, right: 20, width: 36, height: 36, borderRadius: "50%",
+            border: "none", background: "rgba(255,255,255,0.15)", color: "#fff", fontSize: 20,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          }}>×</button>
+        </div>
+      )}
     </div>
   );
 };
@@ -2193,7 +2460,7 @@ export default function TradingJournal() {
     switch (page) {
       case "briefing": return <Briefing onNavigate={navigate} />;
       case "check": return <TradeCheck portfolio={portfolio} tradeList={tradeList} onAddTrade={addTrade} onUpdateTrade={updateTrade} onNavigate={navigate} />;
-      case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} onDeleteTrade={deleteTrade} />;
+      case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} onDeleteTrade={deleteTrade} onAddTrade={addTrade} />;
       case "dashboard": return <Dashboard portfolio={portfolio} />;
       case "watchlist": return <Watchlist onNavigate={navigate} />;
       case "settings": return <SettingsPage />;
