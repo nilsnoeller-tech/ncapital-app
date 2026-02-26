@@ -1676,6 +1676,11 @@ function computeCompositeScore(candles) {
       stop = Math.round((entry - 1.5 * atr) * 100) / 100;
     }
 
+    // Minimum stop distance: 0.75 ATR (verhindert absurd enge Stops bei nahem Support)
+    if (entry - stop < 0.75 * atr) {
+      stop = Math.round((entry - 0.75 * atr) * 100) / 100;
+    }
+
     // Nearest resistance for target, or 3 ATR default
     const nearResistances = ind.swingHighs.filter(r => r > entry && r - entry <= 5 * atr);
     let target;
@@ -1683,6 +1688,11 @@ function computeCompositeScore(candles) {
       target = Math.round(Math.min(...nearResistances) * 100) / 100;
     } else {
       target = Math.round((entry + 3.0 * atr) * 100) / 100;
+    }
+
+    // Minimum target distance: 1.5 ATR
+    if (target - entry < 1.5 * atr) {
+      target = Math.round((entry + 1.5 * atr) * 100) / 100;
     }
 
     // Safety: target > entry, stop < entry
@@ -1693,16 +1703,21 @@ function computeCompositeScore(candles) {
     const reward = target - entry;
     const rr = risk > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
 
-    // Position sizing: EUR 45,000 portfolio, EUR 450 max risk (1%)
+    // Position sizing: EUR 45,000 portfolio, EUR 450 max risk (1%), cap at 100% depot
     const shares = risk > 0 ? Math.floor(450 / risk) : 0;
-    const positionValue = Math.round(shares * entry);
+    let positionValue = Math.round(shares * entry);
+    let cappedShares = shares;
+    if (positionValue > 45000) {
+      cappedShares = Math.floor(45000 / entry);
+      positionValue = Math.round(cappedShares * entry);
+    }
     const portfolioPct = Math.round((positionValue / 45000) * 1000) / 10;
 
     tradePlan = {
       entry, stop, target,
       risk: Math.round(risk * 100) / 100,
       reward: Math.round(reward * 100) / 100,
-      rr, shares, positionValue, portfolioPct,
+      rr, shares: cappedShares, positionValue, portfolioPct,
       atr: Math.round(atr * 100) / 100,
     };
   }
@@ -2078,7 +2093,7 @@ async function processAndNotify(env, config, allResults) {
   // ── Composite TA Picks: LONG only with R:R >= 1.4 ──
   const taPicks = allResults
     .filter((r) => r.composite && r.composite.direction === "LONG" && r.composite.tradePlan && r.composite.tradePlan.rr >= 1.4)
-    .sort((a, b) => (b.composite.adjustedScore || 0) - (a.composite.adjustedScore || 0))
+    .sort((a, b) => (b.composite.compositeScore || 0) - (a.composite.compositeScore || 0))
     .slice(0, 20); // Top 20 picks
 
   // ── ±5% Daily Movers ──
@@ -2281,14 +2296,15 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
 
+  // Sort by compositeScore descending (not adjustedScore which overweights R:R)
+  newPicks.sort((a, b) => (b.composite.compositeScore || 0) - (a.composite.compositeScore || 0));
+
   const lines = newPicks.slice(0, 10).map((r, i) => {
     const c = r.composite;
     const tp = c.tradePlan;
-    const dot = r.change >= 0 ? "\u{1F7E2}" : "\u{1F534}";
     const chg = r.change >= 0 ? `+${r.change.toFixed(1)}%` : `${r.change.toFixed(1)}%`;
-    const confEmoji = c.confidence === "STRONG BUY" ? "\u{1F525}" : "\u{2705}";
 
-    let line = `${i + 1}. ${dot} <b>${esc(r.displaySymbol)}</b>  ${confEmoji} ${c.confidence}  Score <b>${c.compositeScore}</b>\n`;
+    let line = `${i + 1}. \u{1F525} <b>${esc(r.displaySymbol)}</b>  Score <b>${c.compositeScore}</b>\n`;
     line += `   ${fmtP(r.price)} ${r.currency} (${chg})\n`;
     if (tp) {
       line += `   Entry <b>${fmtP(tp.entry)}</b> \u{2502} Stop ${fmtP(tp.stop)} \u{2502} Ziel ${fmtP(tp.target)}\n`;
