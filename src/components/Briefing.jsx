@@ -68,6 +68,7 @@ function TrendIcon({ change }) {
 
 export default function Briefing({ onNavigate }) {
   const [data, setData] = useState(null);
+  const [taPicks, setTaPicks] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -103,11 +104,18 @@ export default function Briefing({ onNavigate }) {
         } catch {}
       }
 
-      const res = await authFetch(`${PROXY_BASE}/api/briefing/latest`);
+      const [res, taRes] = await Promise.all([
+        authFetch(`${PROXY_BASE}/api/briefing/latest`),
+        authFetch(`${PROXY_BASE}/api/scan/ta-picks`).catch(() => null),
+      ]);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);
       localStorage.setItem("ncapital-briefing-cache", JSON.stringify({ data: json, ts: Date.now() }));
+      if (taRes?.ok) {
+        const taJson = await taRes.json();
+        setTaPicks(taJson);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -218,6 +226,16 @@ export default function Briefing({ onNavigate }) {
           {/* ── Sektor-Rotation ── */}
           {briefing.sectorRotation?.length > 0 && (
             <SectorSection sectors={briefing.sectorRotation} regionFocus={briefing.regionFocus} isMobile={isMobile} />
+          )}
+
+          {/* ── TA Scanner Picks (Composite Score LONG) ── */}
+          {taPicks?.picks?.length > 0 && (
+            <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} />
+          )}
+
+          {/* ── ±5% Daily Movers ── */}
+          {taPicks?.movers?.length > 0 && (
+            <MoversSection movers={taPicks.movers} isMobile={isMobile} onNavigate={onNavigate} />
           )}
 
           {/* ── Scanner Top-Hits ── */}
@@ -932,6 +950,181 @@ function TradeSetupsSection({ setups, isMobile, onNavigate }) {
             </div>
           );
         })}
+      </div>
+    </GlassCard>
+  );
+}
+
+// ─── TA Picks Section (Composite Score LONG Candidates) ───
+
+function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
+  const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
+  const confColor = (c) => c === "STRONG BUY" ? C.green : c === "BUY" ? "#00D68F" : C.yellow;
+
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 18 }}>{"\uD83D\uDCCA"}</span>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: LONG-Kandidaten</h3>
+      </div>
+      <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 14 }}>
+        Composite Score (Trend D/W/M + RSI + MACD + MA + Vol) {"\u2022"} R:R {"\u2265"} 1.4 {"\u2022"} Depot EUR 45k
+        {stats && <span> {"\u2022"} {stats.totalScanned} gescannt, {stats.longPicks} Picks</span>}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+        {picks.slice(0, 10).map((r, i) => {
+          const c = r.composite;
+          const tp = c?.tradePlan;
+          if (!c || !tp) return null;
+
+          const range = tp.target - tp.stop;
+          const entryPos = range > 0 ? ((tp.entry - tp.stop) / range) * 100 : 50;
+
+          return (
+            <div key={i} style={{ background: C.bg, borderRadius: 14, padding: 16, border: `1px solid ${C.border}` }}>
+              {/* Header: Rank + Symbol + Score + Confidence */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textDim, background: `${C.accent}15`, borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
+                  <span style={{ color: C.text, fontSize: 18, fontWeight: 700 }}>{r.displaySymbol}</span>
+                  <span style={{ color: C.textDim, fontSize: 11 }}>{r.currency}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 10px", borderRadius: 6 }}>
+                    {c.compositeScore}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: confColor(c.confidence) }}>{c.confidence}</span>
+                </div>
+              </div>
+
+              {/* Price + Change */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ color: C.text, fontSize: 15, fontWeight: 600, fontFamily: "monospace" }}>{fmtP(r.price)}</span>
+                <ChangeDisplay change={r.change} />
+              </div>
+
+              {/* Score Breakdown */}
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
+                {[
+                  { label: "Trend", val: c.breakdown.trend, max: 6 },
+                  { label: "RSI", val: c.breakdown.rsi, max: 1.5 },
+                  { label: "MACD", val: c.breakdown.macd, max: 1 },
+                  { label: "MA", val: c.breakdown.ma, max: 2 },
+                  { label: "Vol", val: c.breakdown.volume, max: 1 },
+                ].map(({ label, val, max }) => {
+                  const color = val > 0 ? C.green : val < 0 ? C.red : C.textDim;
+                  return (
+                    <span key={label} style={{ fontSize: 10, color, background: `${color}12`, borderRadius: 5, padding: "2px 6px", border: `1px solid ${color}20` }}>
+                      {label} {val > 0 ? "+" : ""}{val}
+                    </span>
+                  );
+                })}
+              </div>
+
+              {/* Entry / Stop / Target Bar */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, color: C.red, fontWeight: 600 }}>Stop {fmtP(tp.stop)}</span>
+                  <span style={{ fontSize: 11, color: C.blue, fontWeight: 600 }}>Entry {fmtP(tp.entry)}</span>
+                  <span style={{ fontSize: 11, color: C.green, fontWeight: 600 }}>Ziel {fmtP(tp.target)}</span>
+                </div>
+                <div style={{ height: 8, background: C.border, borderRadius: 4, position: "relative" }}>
+                  <div style={{ position: "absolute", left: 0, height: "100%", width: `${entryPos}%`, background: `${C.red}40`, borderRadius: "4px 0 0 4px" }} />
+                  <div style={{ position: "absolute", left: `${entryPos}%`, height: "100%", width: `${100 - entryPos}%`, background: `${C.green}40`, borderRadius: "0 4px 4px 0" }} />
+                  <div style={{ position: "absolute", left: `${entryPos}%`, top: -3, width: 3, height: 14, background: C.blue, borderRadius: 2, transform: "translateX(-50%)" }} />
+                </div>
+              </div>
+
+              {/* Trade Stats */}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.textMuted }}>
+                <span>R:R <b style={{ color: tp.rr >= 2 ? C.green : C.yellow }}>{tp.rr}</b></span>
+                <span>{tp.shares} Stk.</span>
+                <span>{tp.portfolioPct}% Depot</span>
+                <span>ATR {fmtP(tp.atr)}</span>
+              </div>
+
+              {/* Trend Info */}
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                {["Daily", "Weekly", "Monthly"].map((tf, j) => {
+                  const key = ["dailyTrend", "weeklyTrend", "monthlyTrend"][j];
+                  const val = c.indicators?.[key] || "?";
+                  const isUp = val.includes("Auf");
+                  const isDown = val.includes("Ab");
+                  const color = isUp ? C.green : isDown ? C.red : C.textDim;
+                  return (
+                    <span key={tf} style={{ fontSize: 10, color, background: `${color}10`, borderRadius: 5, padding: "2px 6px" }}>
+                      {tf}: {val}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </GlassCard>
+  );
+}
+
+// ─── Movers Section (±5% Daily Moves) ───
+
+function MoversSection({ movers, isMobile, onNavigate }) {
+  const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
+  const gainers = movers.filter(m => m.change >= 5).sort((a, b) => b.change - a.change);
+  const losers = movers.filter(m => m.change <= -5).sort((a, b) => a.change - b.change);
+
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 18 }}>{"\uD83D\uDEA8"}</span>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>{movers.length} Aktie{movers.length > 1 ? "n" : ""} mit {"\u00B1"}5% Bewegung</h3>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+        {/* Gainers */}
+        {gainers.length > 0 && (
+          <div>
+            <div style={{ color: C.green, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{"\uD83D\uDCC8"} Gewinner</div>
+            {gainers.map((m, i) => (
+              <div key={i} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px",
+                background: `${C.green}08`, borderRadius: 10, marginBottom: 6, border: `1px solid ${C.green}15`,
+              }}>
+                <div>
+                  <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
+                  <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.currency}</span>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
+                  <span style={{ color: C.green, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>+{m.change.toFixed(1)}%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Losers */}
+        {losers.length > 0 && (
+          <div>
+            <div style={{ color: C.red, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{"\uD83D\uDCC9"} Verlierer</div>
+            {losers.map((m, i) => (
+              <div key={i} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px",
+                background: `${C.red}08`, borderRadius: 10, marginBottom: 6, border: `1px solid ${C.red}15`,
+              }}>
+                <div>
+                  <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
+                  <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.currency}</span>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
+                  <span style={{ color: C.red, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>{m.change.toFixed(1)}%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </GlassCard>
   );
