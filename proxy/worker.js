@@ -211,7 +211,7 @@ const RECURRING_EVENTS_2026 = [
 ];
 
 const SCAN_DEFAULTS = {
-  chunkSize: 24,         // Symbols per chunk (24 × 2 calls = 48 fetches, under 50 subrequest limit)
+  chunkSize: 23,         // Symbols per chunk (23 × 2 = 46 fetches + 2 index = 48, under 50 subrequest limit)
   parallelBatch: 6,      // Parallel fetches per batch
   threshold: 78,         // Minimum swing score to show in results (Merkmalliste v2)
   notifyThreshold: 78,   // Push-Schwelle = Screener-Schwelle (identisch)
@@ -1805,6 +1805,17 @@ async function scanSymbolServer(symbol) {
   const atrArr = calcTrueATR(dailyCandles, 14);
   const atr = atrArr.length > 0 ? atrArr[atrArr.length - 1] : price * 0.03;
 
+  // EMA20 distance in ATR units (how extended is price from EMA20)
+  const closes = dailyCandles.map(c => c.close);
+  const ema20arr = calcEMA(closes, 20);
+  const ema20 = ema20arr.length > 0 ? ema20arr[ema20arr.length - 1] : price;
+  const ema20Distance = atr > 0 ? Math.round(((price - ema20) / atr) * 100) / 100 : 0;
+
+  // 20-day return for relative strength calculation
+  const perf20d = closes.length >= 20
+    ? Math.round(((price - closes[closes.length - 20]) / closes[closes.length - 20]) * 10000) / 100
+    : 0;
+
   // Display symbol: remove .DE suffix
   const displaySymbol = symbol.replace(/\.DE$/i, "");
 
@@ -1816,6 +1827,8 @@ async function scanSymbolServer(symbol) {
     price,
     change,
     atr,
+    ema20Distance,
+    perf20d,
     swing,
     intraday,
     composite,
@@ -1943,6 +1956,7 @@ function errorResult(sym, errMsg) {
   return {
     symbol: sym, displaySymbol: sym.replace(/\.DE$/i, ""), name: sym,
     currency: sym.endsWith(".DE") ? "EUR" : "USD", price: 0, change: 0,
+    atr: 0, ema20Distance: null, perf20d: null, relStrengthVsIndex: null,
     swing: { total: 0, factors: [], signals: [], error: errMsg },
     intraday: { total: 0, factors: [], signals: [], error: errMsg },
     composite: null,
@@ -2066,6 +2080,35 @@ async function runChunkedScan(env) {
 }
 
 async function processAndNotify(env, config, allResults) {
+  // ── Fetch index 20-day returns for relative strength (2 subrequests) ──
+  let gspcReturn = 0, gdaxiReturn = 0;
+  try {
+    const [gspcJson, gdaxiJson] = await Promise.all([
+      fetchYahooJSON("^GSPC", { range: "2mo", interval: "1d" }, 10000, true),
+      fetchYahooJSON("^GDAXI", { range: "2mo", interval: "1d" }, 10000, true),
+    ]);
+    for (const [sym, json] of [["^GSPC", gspcJson], ["^GDAXI", gdaxiJson]]) {
+      const parsed = !json.error ? parseYahooCandles(json) : null;
+      if (parsed && parsed.candles.length >= 20) {
+        const c = parsed.candles.map(x => x.close);
+        const ret = ((c[c.length - 1] - c[c.length - 20]) / c[c.length - 20]) * 100;
+        if (sym === "^GSPC") gspcReturn = Math.round(ret * 100) / 100;
+        else gdaxiReturn = Math.round(ret * 100) / 100;
+      }
+    }
+    console.log(`[Scan] Index 20d returns: S&P ${gspcReturn}%, DAX ${gdaxiReturn}%`);
+  } catch (e) {
+    console.log(`[Scan] Index returns fetch failed: ${e.message}`);
+  }
+
+  // Enrich all results with relative strength vs index
+  for (const r of allResults) {
+    const benchReturn = r.symbol.endsWith(".DE") ? gdaxiReturn : gspcReturn;
+    r.relStrengthVsIndex = r.perf20d != null
+      ? Math.round((r.perf20d - benchReturn) * 100) / 100
+      : null;
+  }
+
   // Filter + sort by SWING score (primary), keep combined for reference
   const threshold = config.threshold || SCAN_DEFAULTS.threshold;
   const notifyThreshold = config.notifyThreshold || SCAN_DEFAULTS.notifyThreshold;
@@ -2096,10 +2139,11 @@ async function processAndNotify(env, config, allResults) {
     .sort((a, b) => (b.composite.adjustedScore || 0) - (a.composite.adjustedScore || 0))
     .slice(0, 20); // Top 20 picks
 
-  // ── ±5% Daily Movers ──
+  // ── ATR-based Daily Movers (>= 3 ATR move) ──
   const movers = allResults
-    .filter((r) => r.price > 0 && Math.abs(r.change) >= 5)
-    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    .filter((r) => r.price > 0 && r.atr > 0 && (Math.abs(r.change) / 100 * r.price) / r.atr >= 3)
+    .map((r) => ({ ...r, atrMultiple: Math.round(((Math.abs(r.change) / 100 * r.price) / r.atr) * 10) / 10 }))
+    .sort((a, b) => b.atrMultiple - a.atrMultiple);
 
   // Save results + stats (combined into one key to save writes)
   const stats = {
@@ -2119,18 +2163,20 @@ async function processAndNotify(env, config, allResults) {
       picks: taPicks.map((r) => ({
         symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
         currency: r.currency, price: r.price, change: r.change, atr: r.atr,
+        ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
         composite: r.composite, swing: { total: r.swing.total, setup: r.swing.setup, setupEmoji: r.swing.setupEmoji },
       })),
       movers: movers.map((r) => ({
         symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
-        currency: r.currency, price: r.price, change: r.change,
+        currency: r.currency, price: r.price, change: r.change, atr: r.atr, atrMultiple: r.atrMultiple,
+        ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
       })),
       stats: { totalScanned: allResults.length, longPicks: taPicks.length, movers: movers.length },
       timestamp: new Date().toISOString(),
     }), { expirationTtl: 259200 }),
   ]);
 
-  console.log(`[Scan] Merged: ${allResults.length} total, ${filtered.length} hits (swing >= ${threshold}), ${taPicks.length} TA picks (LONG R:R>=1.4), ${movers.length} movers (±5%), ${stats.errors} errors`);
+  console.log(`[Scan] Merged: ${allResults.length} total, ${filtered.length} hits (swing >= ${threshold}), ${taPicks.length} TA picks (LONG R:R>=1.4), ${movers.length} movers (>=3 ATR), ${stats.errors} errors`);
 
   // Trade-Setup Scanner (swing >= 78) deaktiviert — ersetzt durch TA-Scanner + Mover Alerts
 
@@ -2310,6 +2356,13 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
       line += `   Entry <b>${fmtP(tp.entry)}</b> \u{2502} Stop ${fmtP(tp.stop)} \u{2502} Ziel ${fmtP(tp.target)}\n`;
       line += `   R:R <b>${tp.rr}</b> \u{2502} ${tp.shares} Stk. \u{2502} ${tp.portfolioPct}% Depot`;
     }
+    const extParts = [];
+    if (r.ema20Distance != null) extParts.push(`EMA20 ${r.ema20Distance > 0 ? "+" : ""}${r.ema20Distance.toFixed(1)} ATR`);
+    if (r.relStrengthVsIndex != null) {
+      const idx = r.symbol?.endsWith?.(".DE") ? "DAX" : "S&P";
+      extParts.push(`RS vs ${idx} ${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`);
+    }
+    if (extParts.length > 0) line += `\n   ${extParts.join(" \u{2502} ")}`;
     return line;
   });
 
@@ -2322,7 +2375,7 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   console.log(`[Telegram] TA picks alert sent: ${newPicks.length} STRONG BUY (filtered from ${taPicks.length} total)`);
 }
 
-// ── Telegram ±5% Mover Alerts ──
+// ── Telegram ATR Mover Alerts (>= 3 ATR) ──
 
 async function sendTelegramMoverAlerts(movers, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
@@ -2344,26 +2397,36 @@ async function sendTelegramMoverAlerts(movers, env) {
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
 
-  const gainers = newMovers.filter(r => r.change >= 5).sort((a, b) => b.change - a.change);
-  const losers = newMovers.filter(r => r.change <= -5).sort((a, b) => a.change - b.change);
+  const gainers = newMovers.filter(r => r.change > 0).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
+  const losers = newMovers.filter(r => r.change < 0).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
+
+  const fmtExt = (r) => {
+    const parts = [];
+    if (r.ema20Distance != null) parts.push(`EMA20 ${r.ema20Distance > 0 ? "+" : ""}${r.ema20Distance.toFixed(1)} ATR`);
+    if (r.relStrengthVsIndex != null) {
+      const idx = r.symbol?.endsWith?.(".DE") ? "DAX" : "S&P";
+      parts.push(`RS vs ${idx} ${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`);
+    }
+    return parts.length > 0 ? `\n   ${parts.join(" \u{2502} ")}` : "";
+  };
 
   const lines = [];
   if (gainers.length > 0) {
-    lines.push("\u{1F4C8} <b>Top-Gewinner (\u{2265} +5%)</b>");
+    lines.push("\u{1F4C8} <b>Top-Gewinner</b>");
     for (const r of gainers) {
-      lines.push(`\u{1F7E2} <b>${esc(r.displaySymbol)}</b>  ${fmtP(r.price)} ${r.currency}  <b>+${r.change.toFixed(1)}%</b>`);
+      lines.push(`\u{1F7E2} <b>${esc(r.displaySymbol)}</b>  ${fmtP(r.price)} ${r.currency}  <b>+${r.change.toFixed(1)}%</b>  (${r.atrMultiple || "?"}x ATR)${fmtExt(r)}`);
     }
   }
   if (losers.length > 0) {
     if (gainers.length > 0) lines.push("");
-    lines.push("\u{1F4C9} <b>Top-Verlierer (\u{2264} -5%)</b>");
+    lines.push("\u{1F4C9} <b>Top-Verlierer</b>");
     for (const r of losers) {
-      lines.push(`\u{1F534} <b>${esc(r.displaySymbol)}</b>  ${fmtP(r.price)} ${r.currency}  <b>${r.change.toFixed(1)}%</b>`);
+      lines.push(`\u{1F534} <b>${esc(r.displaySymbol)}</b>  ${fmtP(r.price)} ${r.currency}  <b>${r.change.toFixed(1)}%</b>  (${r.atrMultiple || "?"}x ATR)${fmtExt(r)}`);
     }
   }
 
-  const header = `\u{1F6A8} <b>${newMovers.length} Aktie${newMovers.length > 1 ? "n" : ""} mit \u{00B1}5% Bewegung</b>`;
-  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n")}\n\n<i>Top 100 US + DAX 40 \u{2022} Tagesmover</i>`;
+  const header = `\u{1F6A8} <b>${newMovers.length} Aktie${newMovers.length > 1 ? "n" : ""} mit \u{2265}3x ATR Bewegung</b>`;
+  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n")}\n\n<i>Top 100 US + DAX 40 \u{2022} ATR-Mover</i>`;
 
   await sendTelegram(msg, env);
   await Promise.all(cooldownWrites);

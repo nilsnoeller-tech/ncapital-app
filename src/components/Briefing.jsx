@@ -233,7 +233,7 @@ export default function Briefing({ onNavigate }) {
             <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} />
           )}
 
-          {/* ── ±5% Daily Movers ── */}
+          {/* ── ATR-based Daily Movers (>= 3x ATR) ── */}
           {taPicks?.movers?.length > 0 && (
             <MoversSection movers={taPicks.movers} isMobile={isMobile} onNavigate={onNavigate} />
           )}
@@ -1044,6 +1044,32 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
                 <span>ATR {fmtP(tp.atr)}</span>
               </div>
 
+              {/* Extension + Relative Strength */}
+              {(r.ema20Distance != null || r.relStrengthVsIndex != null) && (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  {r.ema20Distance != null && (
+                    <span style={{
+                      fontSize: 10,
+                      color: Math.abs(r.ema20Distance) > 2 ? "#f59e0b" : C.textDim,
+                      background: `${Math.abs(r.ema20Distance) > 2 ? "#f59e0b" : C.textDim}10`,
+                      borderRadius: 5, padding: "2px 6px",
+                    }}>
+                      EMA20 {r.ema20Distance > 0 ? "+" : ""}{r.ema20Distance.toFixed(1)} ATR
+                    </span>
+                  )}
+                  {r.relStrengthVsIndex != null && (
+                    <span style={{
+                      fontSize: 10,
+                      color: r.relStrengthVsIndex > 0 ? C.green : r.relStrengthVsIndex < -3 ? C.red : C.textDim,
+                      background: `${r.relStrengthVsIndex > 0 ? C.green : r.relStrengthVsIndex < -3 ? C.red : C.textDim}10`,
+                      borderRadius: 5, padding: "2px 6px",
+                    }}>
+                      RS vs {r.currency === "EUR" ? "DAX" : "S&P"} {r.relStrengthVsIndex > 0 ? "+" : ""}{r.relStrengthVsIndex.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+              )}
+
               {/* Trend Info */}
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 {["Daily", "Weekly", "Monthly"].map((tf, j) => {
@@ -1067,18 +1093,18 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
   );
 }
 
-// ─── Movers Section (±5% Daily Moves) ───
+// ─── Movers Section (>= 3x ATR Daily Moves) ───
 
 function MoversSection({ movers, isMobile, onNavigate }) {
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
-  const gainers = movers.filter(m => m.change >= 5).sort((a, b) => b.change - a.change);
-  const losers = movers.filter(m => m.change <= -5).sort((a, b) => a.change - b.change);
+  const gainers = movers.filter(m => m.change > 0).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
+  const losers = movers.filter(m => m.change < 0).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
 
   return (
     <GlassCard>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
         <span style={{ fontSize: 18 }}>{"\uD83D\uDEA8"}</span>
-        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>{movers.length} Aktie{movers.length > 1 ? "n" : ""} mit {"\u00B1"}5% Bewegung</h3>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>{movers.length} Aktie{movers.length > 1 ? "n" : ""} mit {"\u2265"}3x ATR Bewegung</h3>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
@@ -1088,17 +1114,33 @@ function MoversSection({ movers, isMobile, onNavigate }) {
             <div style={{ color: C.green, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{"\uD83D\uDCC8"} Gewinner</div>
             {gainers.map((m, i) => (
               <div key={i} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px",
+                padding: "8px 12px",
                 background: `${C.green}08`, borderRadius: 10, marginBottom: 6, border: `1px solid ${C.green}15`,
               }}>
-                <div>
-                  <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
-                  <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.currency}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
+                    <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.atrMultiple ? `${m.atrMultiple}x ATR` : m.currency}</span>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
+                    <span style={{ color: C.green, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>+{m.change.toFixed(1)}%</span>
+                  </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
-                  <span style={{ color: C.green, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>+{m.change.toFixed(1)}%</span>
-                </div>
+                {(m.ema20Distance != null || m.relStrengthVsIndex != null) && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    {m.ema20Distance != null && (
+                      <span style={{ fontSize: 10, color: Math.abs(m.ema20Distance) > 2 ? "#f59e0b" : C.textDim }}>
+                        EMA20: {m.ema20Distance > 0 ? "+" : ""}{m.ema20Distance.toFixed(1)} ATR
+                      </span>
+                    )}
+                    {m.relStrengthVsIndex != null && (
+                      <span style={{ fontSize: 10, color: m.relStrengthVsIndex > 0 ? C.green : m.relStrengthVsIndex < -3 ? C.red : C.textDim }}>
+                        RS: {m.relStrengthVsIndex > 0 ? "+" : ""}{m.relStrengthVsIndex.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1110,17 +1152,33 @@ function MoversSection({ movers, isMobile, onNavigate }) {
             <div style={{ color: C.red, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{"\uD83D\uDCC9"} Verlierer</div>
             {losers.map((m, i) => (
               <div key={i} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px",
+                padding: "8px 12px",
                 background: `${C.red}08`, borderRadius: 10, marginBottom: 6, border: `1px solid ${C.red}15`,
               }}>
-                <div>
-                  <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
-                  <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.currency}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <span style={{ color: C.text, fontWeight: 700, fontSize: 14 }}>{m.displaySymbol}</span>
+                    <span style={{ color: C.textDim, fontSize: 11, marginLeft: 6 }}>{m.atrMultiple ? `${m.atrMultiple}x ATR` : m.currency}</span>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
+                    <span style={{ color: C.red, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>{m.change.toFixed(1)}%</span>
+                  </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <span style={{ color: C.text, fontFamily: "monospace", fontSize: 13 }}>{fmtP(m.price)}</span>
-                  <span style={{ color: C.red, fontWeight: 700, fontSize: 13, marginLeft: 10 }}>{m.change.toFixed(1)}%</span>
-                </div>
+                {(m.ema20Distance != null || m.relStrengthVsIndex != null) && (
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    {m.ema20Distance != null && (
+                      <span style={{ fontSize: 10, color: Math.abs(m.ema20Distance) > 2 ? "#f59e0b" : C.textDim }}>
+                        EMA20: {m.ema20Distance > 0 ? "+" : ""}{m.ema20Distance.toFixed(1)} ATR
+                      </span>
+                    )}
+                    {m.relStrengthVsIndex != null && (
+                      <span style={{ fontSize: 10, color: m.relStrengthVsIndex > 0 ? C.green : m.relStrengthVsIndex < -3 ? C.red : C.textDim }}>
+                        RS: {m.relStrengthVsIndex > 0 ? "+" : ""}{m.relStrengthVsIndex.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
