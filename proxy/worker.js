@@ -2254,14 +2254,27 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   if (!taPicks || taPicks.length === 0) return;
 
-  // Cooldown: only send TA picks once per 2 hours
-  const taCooldown = await env.NCAPITAL_KV.get("tg-cooldown:ta-picks");
-  if (taCooldown) return;
+  // Only send picks with composite score > 5 (STRONG BUY)
+  const strongPicks = taPicks.filter((r) => r.composite && r.composite.compositeScore > 5);
+  if (strongPicks.length === 0) return;
+
+  // Per-symbol cooldown: skip already-alerted symbols (6 hours)
+  const cooldownKeys = strongPicks.map((r) => `tg-ta:${r.displaySymbol}`);
+  const cooldownValues = await Promise.all(cooldownKeys.map((k) => env.NCAPITAL_KV.get(k)));
+
+  const newPicks = [];
+  const cooldownWrites = [];
+  for (let i = 0; i < strongPicks.length; i++) {
+    if (cooldownValues[i]) continue; // Already alerted
+    newPicks.push(strongPicks[i]);
+    cooldownWrites.push(env.NCAPITAL_KV.put(cooldownKeys[i], "1", { expirationTtl: 21600 })); // 6h cooldown
+  }
+  if (newPicks.length === 0) return;
 
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
 
-  const lines = taPicks.slice(0, 10).map((r, i) => {
+  const lines = newPicks.slice(0, 10).map((r, i) => {
     const c = r.composite;
     const tp = c.tradePlan;
     const dot = r.change >= 0 ? "\u{1F7E2}" : "\u{1F534}";
@@ -2277,13 +2290,13 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
     return line;
   });
 
-  const header = `\u{1F4CA} <b>TA-Scanner: ${taPicks.length} LONG-Kandidaten</b>`;
-  const subheader = `<i>Score-Range: ${taPicks[taPicks.length - 1].composite.compositeScore} bis ${taPicks[0].composite.compositeScore} \u{2022} Depot EUR 45k \u{2022} R:R \u{2265} 1.4</i>`;
+  const header = `\u{1F4CA} <b>TA-Scanner: ${newPicks.length} STRONG BUY</b>`;
+  const subheader = `<i>Score > 5 \u{2022} Depot EUR 45k \u{2022} R:R \u{2265} 1.4</i>`;
   const msg = `${header}\n${subheader}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Composite TA Score \u{2022} ATR-basierte Levels</i>`;
 
   await sendTelegramMessages([msg], env);
-  await env.NCAPITAL_KV.put("tg-cooldown:ta-picks", "1", { expirationTtl: 7200 });
-  console.log(`[Telegram] TA picks alert sent: ${taPicks.length} LONG candidates`);
+  await Promise.all(cooldownWrites);
+  console.log(`[Telegram] TA picks alert sent: ${newPicks.length} STRONG BUY (filtered from ${taPicks.length} total)`);
 }
 
 // ── Telegram ±5% Mover Alerts ──
