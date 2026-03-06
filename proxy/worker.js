@@ -2322,8 +2322,8 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   if (!taPicks || taPicks.length === 0) return;
 
-  // Only send picks with composite score > 5 (STRONG BUY)
-  const strongPicks = taPicks.filter((r) => r.composite && r.composite.compositeScore > 5);
+  // Only send picks with composite score > 6.5 (high-conviction STRONG BUY)
+  const strongPicks = taPicks.filter((r) => r.composite && r.composite.compositeScore > 6.5);
   if (strongPicks.length === 0) return;
 
   // Per-symbol cooldown: skip already-alerted symbols (6 hours)
@@ -2371,7 +2371,7 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   });
 
   const header = `\u{1F4CA} <b>TA-Scanner: ${newPicks.length} STRONG BUY</b>`;
-  const subheader = `<i>Score > 5 \u{2022} Depot EUR 45k \u{2022} R:R \u{2265} 1.4</i>`;
+  const subheader = `<i>Score > 6.5 \u{2022} Depot EUR 45k \u{2022} R:R \u{2265} 1.4</i>`;
   const msg = `${header}\n${subheader}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Composite TA Score \u{2022} ATR-basierte Levels</i>`;
 
   await sendTelegramMessages([msg], env);
