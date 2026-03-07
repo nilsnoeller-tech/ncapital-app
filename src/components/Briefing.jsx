@@ -961,15 +961,52 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
   const confColor = (c) => c === "STRONG BUY" ? C.green : c === "BUY" ? "#00D68F" : C.yellow;
 
+  const regime = stats?.marketRegime;
+  const sp500Bull = regime?.sp500 === "bullish";
+  const daxBull = regime?.dax === "bullish";
+
   return (
     <GlassCard>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 18 }}>{"\uD83D\uDCCA"}</span>
-        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: LONG-Kandidaten</h3>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: Optimierte Picks</h3>
       </div>
+
+      {/* Market Regime Status */}
+      {regime && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <span style={{
+            fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+            color: sp500Bull ? C.green : C.red,
+            background: `${sp500Bull ? C.green : C.red}12`,
+            border: `1px solid ${sp500Bull ? C.green : C.red}25`,
+          }}>
+            S&P 500 {sp500Bull ? "\u2713 über" : "\u2717 unter"} SMA200
+          </span>
+          <span style={{
+            fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+            color: daxBull ? C.green : C.red,
+            background: `${daxBull ? C.green : C.red}12`,
+            border: `1px solid ${daxBull ? C.green : C.red}25`,
+          }}>
+            DAX {daxBull ? "\u2713 über" : "\u2717 unter"} SMA200
+          </span>
+        </div>
+      )}
+
+      {/* Filter Summary */}
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
+        {["Score \u2265 7.5", "RS 0\u201315%", "EMA20 < 2 ATR", "Index > SMA200", "Max 2/Sektor"].map((f) => (
+          <span key={f} style={{
+            fontSize: 9, color: C.accent, background: `${C.accent}10`, borderRadius: 4, padding: "1px 5px",
+            border: `1px solid ${C.accent}20`,
+          }}>{f}</span>
+        ))}
+      </div>
+
       <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 14 }}>
-        Composite Score (Trend D/W/M + RSI + MACD + MA + Vol) {"\u2022"} R:R {"\u2265"} 1.4 {"\u2022"} Depot EUR 45k
-        {stats && <span> {"\u2022"} {stats.totalScanned} gescannt, {stats.longPicks} Picks</span>}
+        Backtest-optimiert (PF 1.56 {"\u2022"} WR 57% {"\u2022"} MaxDD -4.5%) {"\u2022"} Depot EUR 45k
+        {stats && <span> {"\u2022"} {stats.totalScanned} gescannt, {stats.unfilteredPicks || stats.longPicks} unfiltered {"\u2192"} {stats.longPicks} Picks</span>}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
@@ -1005,6 +1042,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
               </div>
 
               {/* Score Breakdown */}
+              {c.breakdown && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
                 {[
                   { label: "Trend", val: c.breakdown.trend, max: 6 },
@@ -1021,6 +1059,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
                   );
                 })}
               </div>
+              )}
 
               {/* Entry / Stop / Target Bar */}
               <div style={{ marginBottom: 10 }}>
@@ -1071,6 +1110,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
               )}
 
               {/* Trend Info */}
+              {c.indicators && (
               <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
                 {["Daily", "Weekly", "Monthly"].map((tf, j) => {
                   const key = ["dailyTrend", "weeklyTrend", "monthlyTrend"][j];
@@ -1085,6 +1125,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}
