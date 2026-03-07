@@ -1667,25 +1667,109 @@ function computeCompositeScore(candles) {
     const atr = ind.atrLast || price * 0.02;
     const entry = Math.round((price - 0.5 * atr) * 100) / 100;
 
-    // Nearest support within 1.5 ATR for tighter stop
-    const nearSupports = ind.swingLows.filter(s => s < entry && entry - s <= 1.5 * atr);
+    // ── STOP: Multi-Source Support Detection ──
+    // Sammelt Support-Kandidaten aus mehreren Quellen fuer praezisere Stops
+    const supportCandidates = [];
+
+    // 1) Swing Lows (3-bar, bereits berechnet)
+    ind.swingLows.filter(s => s < entry && entry - s <= 2 * atr)
+      .forEach(s => supportCandidates.push(s));
+
+    // 2) Minor Swing Lows (2-bar Fenster, findet mehr Pivots)
+    const rcStop = ind.candles.slice(-60);
+    for (let i = 2; i < rcStop.length - 2; i++) {
+      const l = rcStop[i].low;
+      if (l <= rcStop[i-1].low && l <= rcStop[i-2].low && l <= rcStop[i+1].low && l <= rcStop[i+2].low) {
+        if (l < entry && entry - l <= 2 * atr) supportCandidates.push(l);
+      }
+    }
+
+    // 3) EMA-Support (EMA20/EMA50 als dynamische Unterstuetzung)
+    if (ind.e20 < entry && entry - ind.e20 <= 2 * atr && ind.priceAboveEma20) {
+      supportCandidates.push(ind.e20);
+    }
+    if (ind.e50 < entry && entry - ind.e50 <= 2.5 * atr && price > ind.e50) {
+      supportCandidates.push(ind.e50);
+    }
+
+    // 4) Recent 10-Day Low
+    const recent10Low = Math.min(...ind.candles.slice(-10).map(c => c.low));
+    if (recent10Low < entry && entry - recent10Low <= 2 * atr) {
+      supportCandidates.push(recent10Low);
+    }
+
+    // 5) Fibonacci Levels als Support (61.8%, 50%, 38.2% Retracement)
+    if (ind.fibPrices && ind.fibRange > 0) {
+      for (const [, fibPrice] of Object.entries(ind.fibPrices)) {
+        if (fibPrice < entry && entry - fibPrice <= 2 * atr && fibPrice > entry - 2.5 * atr) {
+          supportCandidates.push(fibPrice);
+        }
+      }
+    }
+
     let stop;
-    if (nearSupports.length > 0) {
-      stop = Math.round((Math.max(...nearSupports) - 0.15 * atr) * 100) / 100;
+    if (supportCandidates.length > 0) {
+      // Hoechsten (engsten) Support nehmen — naechster Support unter Entry
+      const bestSupport = Math.max(...supportCandidates);
+      stop = Math.round((bestSupport - 0.15 * atr) * 100) / 100;
     } else {
       stop = Math.round((entry - 1.5 * atr) * 100) / 100;
     }
 
-    // Minimum stop distance: 0.75 ATR (verhindert absurd enge Stops bei nahem Support)
+    // Minimum stop distance: 0.75 ATR (verhindert absurd enge Stops)
     if (entry - stop < 0.75 * atr) {
       stop = Math.round((entry - 0.75 * atr) * 100) / 100;
     }
 
-    // Nearest resistance for target, or 3 ATR default
-    const nearResistances = ind.swingHighs.filter(r => r > entry && r - entry <= 5 * atr);
+    // ── TARGET: Multi-Source Resistance Detection ──
+    const resistanceCandidates = [];
+
+    // 1) Fibonacci Levels als Target (Preise UEBER Entry)
+    if (ind.fibPrices && ind.fibRange > 0) {
+      for (const [, fibPrice] of Object.entries(ind.fibPrices)) {
+        if (fibPrice > entry && fibPrice - entry <= 6 * atr) {
+          resistanceCandidates.push(fibPrice);
+        }
+      }
+    }
+
+    // 2) Swing Highs (3-bar, bereits berechnet)
+    ind.swingHighs.filter(r => r > entry && r - entry <= 6 * atr)
+      .forEach(r => resistanceCandidates.push(r));
+
+    // 3) Minor Swing Highs (2-bar Fenster)
+    const rcTarget = ind.candles.slice(-60);
+    for (let i = 2; i < rcTarget.length - 2; i++) {
+      const h = rcTarget[i].high;
+      if (h >= rcTarget[i-1].high && h >= rcTarget[i-2].high && h >= rcTarget[i+1].high && h >= rcTarget[i+2].high) {
+        if (h > entry && h - entry <= 6 * atr) resistanceCandidates.push(h);
+      }
+    }
+
+    // 4) Fibonacci High (Swing-Hoch) als Target
+    if (ind.fibHigh > entry && ind.fibHigh - entry <= 6 * atr) {
+      resistanceCandidates.push(ind.fibHigh);
+    }
+
+    // 5) Recent 20-Day High
+    const recent20High = Math.max(...ind.candles.slice(-20).map(c => c.high));
+    if (recent20High > entry && recent20High - entry <= 6 * atr) {
+      resistanceCandidates.push(recent20High);
+    }
+
     let target;
-    if (nearResistances.length > 0) {
-      target = Math.round(Math.min(...nearResistances) * 100) / 100;
+    if (resistanceCandidates.length > 0) {
+      // Fuer Target: Naechsten Widerstand waehlen, aber mindestens R:R 1.5 garantieren
+      const stopDist = entry - stop;
+      const minTargetForRR = entry + stopDist * 1.5; // mindestens R:R 1.5
+      // Filtere Resistances die mindestens R:R 1.5 liefern
+      const viableTargets = resistanceCandidates.filter(r => r >= minTargetForRR);
+      if (viableTargets.length > 0) {
+        target = Math.round(Math.min(...viableTargets) * 100) / 100;
+      } else {
+        // Kein Target mit R:R >= 1.5 → naechste Resistance oder Default
+        target = Math.round(Math.min(...resistanceCandidates) * 100) / 100;
+      }
     } else {
       target = Math.round((entry + 3.0 * atr) * 100) / 100;
     }
