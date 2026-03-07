@@ -2,7 +2,7 @@
 // Taeglich automatisierte Markt-Briefings: Morning (08:30, DAX/EU) und Afternoon (15:00, US)
 
 import React, { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sun, Moon, TrendingUp, TrendingDown, Minus, AlertTriangle, Calendar, BarChart3, Target, Clock } from "lucide-react";
+import { RefreshCw, Sun, Moon, TrendingUp, TrendingDown, Minus, AlertTriangle, BarChart3, Target, Clock } from "lucide-react";
 import { authFetch } from "../services/auth.js";
 
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
@@ -208,9 +208,6 @@ export default function Briefing({ onNavigate }) {
         </GlassCard>
       ) : (
         <>
-          {/* ── Saisonale Einordnung ── */}
-          <SeasonalSection seasonal={briefing.seasonalContext} isMobile={isMobile} />
-
           {/* ── Pre-Market Futures (oben) ── */}
           {briefing.futures && (
             <FuturesSection futures={briefing.futures} isMobile={isMobile} />
@@ -239,77 +236,6 @@ export default function Briefing({ onNavigate }) {
 
       <style>{`@keyframes spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }`}</style>
     </div>
-  );
-}
-
-// ─── Seasonal Section ───
-function SeasonalSection({ seasonal, isMobile }) {
-  if (!seasonal) return null;
-  const { monthName, monthPattern, presidentialCycle, midtermNote, upcomingEvents } = seasonal;
-
-  // Color bar for monthly pattern
-  const sp500Num = typeof monthPattern.sp500Avg === "string" ? parseFloat(monthPattern.sp500Avg) : monthPattern.sp500Avg;
-  const daxNum = typeof monthPattern.daxAvg === "string" ? parseFloat(monthPattern.daxAvg) : monthPattern.daxAvg;
-  const sp500Color = sp500Num > 0.5 ? C.green : sp500Num < -0.2 ? C.red : C.yellow;
-  const daxColor = daxNum > 0.5 ? C.green : daxNum < -0.2 ? C.red : C.yellow;
-
-  return (
-    <GlassCard>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-        <Calendar size={18} color={C.accent} />
-        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>Saisonale Einordnung</h3>
-        <span style={{ color: C.textMuted, fontSize: 13, marginLeft: "auto" }}>{monthName} {seasonal.year}</span>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginBottom: midtermNote ? 14 : 0 }}>
-        {/* Monthly Pattern */}
-        <div style={{ background: C.bg, borderRadius: 12, padding: 14, border: `1px solid ${C.border}` }}>
-          <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>Monats-Saisonalitaet</div>
-          <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
-            <div>
-              <span style={{ color: C.textDim, fontSize: 11 }}>S&P 500 </span>
-              <span style={{ color: sp500Color, fontWeight: 700, fontSize: 15, fontFamily: "monospace" }}>
-                {sp500Num > 0 ? "+" : ""}{typeof sp500Num === "number" ? sp500Num.toFixed(1) : sp500Num}%
-              </span>
-            </div>
-            <div>
-              <span style={{ color: C.textDim, fontSize: 11 }}>DAX </span>
-              <span style={{ color: daxColor, fontWeight: 700, fontSize: 15, fontFamily: "monospace" }}>
-                {daxNum > 0 ? "+" : ""}{typeof daxNum === "number" ? daxNum.toFixed(1) : daxNum}%
-              </span>
-            </div>
-          </div>
-          <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{monthPattern.note}</div>
-        </div>
-
-        {/* Presidential Cycle */}
-        <div style={{ background: C.bg, borderRadius: 12, padding: 14, border: `1px solid ${C.border}` }}>
-          <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", marginBottom: 8 }}>US-Wahlzyklus</div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8 }}>
-            <span style={{ color: C.accent, fontWeight: 700, fontSize: 15 }}>{presidentialCycle.name}</span>
-            <span style={{ color: C.textDim, fontSize: 12 }}>Jahr {presidentialCycle.year}/4</span>
-          </div>
-          <div style={{ color: C.textMuted, fontSize: 12, lineHeight: 1.5 }}>{presidentialCycle.note}</div>
-          <div style={{ marginTop: 4 }}>
-            <span style={{ color: C.textDim, fontSize: 11 }}>S&P-Avg </span>
-            <span style={{ color: presidentialCycle.sp500Avg > 0 ? C.green : C.red, fontWeight: 600, fontSize: 13, fontFamily: "monospace" }}>
-              {presidentialCycle.sp500Avg > 0 ? "+" : ""}{presidentialCycle.sp500Avg}%
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Midterm Note */}
-      {midtermNote && (
-        <div style={{ background: `${C.orange}12`, borderRadius: 10, padding: "10px 14px", border: `1px solid ${C.orange}30` }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <AlertTriangle size={14} color={C.orange} />
-            <span style={{ color: C.orange, fontSize: 13, fontWeight: 600 }}>{midtermNote}</span>
-          </div>
-        </div>
-      )}
-
-    </GlassCard>
   );
 }
 
