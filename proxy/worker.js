@@ -2080,23 +2080,29 @@ async function runChunkedScan(env) {
 }
 
 async function processAndNotify(env, config, allResults) {
-  // ── Fetch index 20-day returns for relative strength (2 subrequests) ──
+  // ── Fetch index data for relative strength + market regime (2 subrequests) ──
   let gspcReturn = 0, gdaxiReturn = 0;
+  let gspcAboveSMA200 = true, gdaxiAboveSMA200 = true; // Default true (graceful degradation)
   try {
     const [gspcJson, gdaxiJson] = await Promise.all([
-      fetchYahooJSON("^GSPC", { range: "2mo", interval: "1d" }, 10000, true),
-      fetchYahooJSON("^GDAXI", { range: "2mo", interval: "1d" }, 10000, true),
+      fetchYahooJSON("^GSPC", { range: "1y", interval: "1d" }, 10000, true),
+      fetchYahooJSON("^GDAXI", { range: "1y", interval: "1d" }, 10000, true),
     ]);
     for (const [sym, json] of [["^GSPC", gspcJson], ["^GDAXI", gdaxiJson]]) {
       const parsed = !json.error ? parseYahooCandles(json) : null;
       if (parsed && parsed.candles.length >= 20) {
         const c = parsed.candles.map(x => x.close);
         const ret = ((c[c.length - 1] - c[c.length - 20]) / c[c.length - 20]) * 100;
-        if (sym === "^GSPC") gspcReturn = Math.round(ret * 100) / 100;
-        else gdaxiReturn = Math.round(ret * 100) / 100;
+        // SMA200 for market regime filter
+        const sma200 = c.length >= 200
+          ? c.slice(c.length - 200).reduce((s, v) => s + v, 0) / 200
+          : null;
+        const aboveSMA200 = sma200 ? c[c.length - 1] > sma200 : true;
+        if (sym === "^GSPC") { gspcReturn = Math.round(ret * 100) / 100; gspcAboveSMA200 = aboveSMA200; }
+        else { gdaxiReturn = Math.round(ret * 100) / 100; gdaxiAboveSMA200 = aboveSMA200; }
       }
     }
-    console.log(`[Scan] Index 20d returns: S&P ${gspcReturn}%, DAX ${gdaxiReturn}%`);
+    console.log(`[Scan] Index 20d returns: S&P ${gspcReturn}%, DAX ${gdaxiReturn}% | Regime: S&P ${gspcAboveSMA200 ? "BULL" : "BEAR"}, DAX ${gdaxiAboveSMA200 ? "BULL" : "BEAR"}`);
   } catch (e) {
     console.log(`[Scan] Index returns fetch failed: ${e.message}`);
   }
@@ -2133,11 +2139,57 @@ async function processAndNotify(env, config, allResults) {
     return { total: arr.length, positive: pos, negative: neg, unchanged: unch, avgChange: Math.round(avgChg * 100) / 100 };
   };
 
-  // ── Composite TA Picks: LONG only with R:R >= 1.4 ──
-  const taPicks = allResults
-    .filter((r) => r.composite && r.composite.direction === "LONG" && r.composite.tradePlan && r.composite.tradePlan.rr >= 1.4)
-    .sort((a, b) => (b.composite.adjustedScore || 0) - (a.composite.adjustedScore || 0))
-    .slice(0, 20); // Top 20 picks
+  // ── Composite TA Picks: LONG with optimized filters (Backtest V2 + RS-Analyse) ──
+  // Filters: R:R >= 1.4, RS 0–15% (Sweet Spot), EMA20 < 2 ATR, Market Regime
+  const unfilteredPicks = allResults
+    .filter((r) => r.composite && r.composite.direction === "LONG" && r.composite.compositeScore >= 7.5 && r.composite.tradePlan && r.composite.tradePlan.rr >= 1.4);
+  const taPicksFiltered = unfilteredPicks
+    .filter((r) => {
+      // Market Regime: skip if benchmark index below SMA200
+      const isDE = r.symbol.endsWith(".DE");
+      if (isDE && !gdaxiAboveSMA200) return false;
+      if (!isDE && !gspcAboveSMA200) return false;
+      // Relative Strength 0–15% (Sweet Spot: >15% = sinkende Win-Rate, <0% = Mean-Reversion)
+      if (r.relStrengthVsIndex != null && (r.relStrengthVsIndex <= 0 || r.relStrengthVsIndex > 15)) return false;
+      // EMA20 distance < 2.0 ATR (not overextended)
+      if (r.ema20Distance != null && Math.abs(r.ema20Distance) > 2.0) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      // Rank by backtested predictors: RS sweet spot + EMA20 proximity + R:R
+      const rsScore = (v) => {
+        if (v == null) return 0;
+        if (v >= 10 && v <= 15) return 3;  // Sweet Spot: 60.2% WR
+        if (v >= 5) return 2;              // Solid: 57.6% WR
+        return 1;                          // Mild: 56.5% WR
+      };
+      const emaScore = (v) => {
+        if (v == null) return 0;
+        const abs = Math.abs(v);
+        if (abs < 0.5) return 3;           // Ideal entry near EMA20
+        if (abs < 1.0) return 2;
+        return 1;                          // 1.0–2.0 ATR
+      };
+      const rrScore = (r) => (r.composite?.tradePlan?.rr || 0) * 0.5;
+      const rank = (r) => rsScore(r.relStrengthVsIndex) + emaScore(r.ema20Distance) + rrScore(r);
+      return rank(b) - rank(a);
+    });
+
+  // Sector Limit: max 2 picks per sector (diversification)
+  const sectorPickCount = {};
+  const taPicks = [];
+  for (const r of taPicksFiltered) {
+    const sym = r.displaySymbol || r.symbol.replace(/\.DE$/i, "");
+    const isDE = r.symbol.endsWith(".DE");
+    const sMap = isDE ? DAX_SECTORS : US_SECTORS;
+    let sector = "Other";
+    for (const [s, syms] of Object.entries(sMap)) {
+      if (syms.includes(sym)) { sector = s; break; }
+    }
+    sectorPickCount[sector] = (sectorPickCount[sector] || 0) + 1;
+    if (sectorPickCount[sector] <= 2) taPicks.push(r);
+    if (taPicks.length >= 20) break; // Cap at 20
+  }
 
   // ── ATR-based Daily Movers (>= 3 ATR move) ──
   const movers = allResults
@@ -2156,27 +2208,99 @@ async function processAndNotify(env, config, allResults) {
     breadth: { dax: breadth(daxAll), sp100: breadth(spAll) },
   };
 
+  // ── Market-Merge: prevent sp100-only scan from erasing DAX picks (and vice versa) ──
+  const hasDE = allResults.some((r) => r.symbol.endsWith(".DE"));
+  const hasUS = allResults.some((r) => !r.symbol.endsWith(".DE"));
+  const scanScope = hasDE && hasUS ? "both" : hasDE ? "dax-only" : "sp100-only";
+
+  // Map current picks/movers for KV
+  const currentPicksMapped = taPicks.map((r) => ({
+    symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
+    currency: r.currency, price: r.price, change: r.change, atr: r.atr,
+    ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
+    composite: r.composite, swing: { total: r.swing.total, setup: r.swing.setup, setupEmoji: r.swing.setupEmoji },
+  }));
+  const currentMoversMapped = movers.map((r) => ({
+    symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
+    currency: r.currency, price: r.price, change: r.change, atr: r.atr, atrMultiple: r.atrMultiple,
+    ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
+  }));
+  const currentHitsMapped = filtered;
+
+  let kvPicks = [...currentPicksMapped];
+  let kvMovers = [...currentMoversMapped];
+  let kvHits = [...currentHitsMapped];
+  let mergedBreadth = { ...stats.breadth };
+
+  if (scanScope !== "both") {
+    try {
+      const [existingTA, existingScan] = await Promise.all([
+        env.NCAPITAL_KV.get("scan:ta-picks", "json"),
+        env.NCAPITAL_KV.get("scan:results", "json"),
+      ]);
+      const isDE = (sym) => sym?.endsWith?.(".DE");
+      const keepFilter = scanScope === "sp100-only" ? isDE : (sym) => !isDE(sym);
+
+      if (existingTA?.picks) {
+        const kept = existingTA.picks.filter((p) => keepFilter(p.symbol));
+        kvPicks.push(...kept);
+        console.log(`[Scan] Market-Merge: kept ${kept.length} ${scanScope === "sp100-only" ? "DE" : "US"} picks from previous scan`);
+      }
+      if (existingTA?.movers) {
+        const kept = existingTA.movers.filter((m) => keepFilter(m.symbol));
+        kvMovers.push(...kept);
+      }
+      if (existingScan?.hits) {
+        const kept = existingScan.hits.filter((h) => keepFilter(h.symbol));
+        kvHits.push(...kept);
+      }
+      // Preserve breadth from the other market
+      if (scanScope === "sp100-only" && existingScan?.stats?.breadth?.dax) {
+        mergedBreadth.dax = existingScan.stats.breadth.dax;
+      }
+      if (scanScope === "dax-only" && existingScan?.stats?.breadth?.sp100) {
+        mergedBreadth.sp100 = existingScan.stats.breadth.sp100;
+      }
+    } catch (e) {
+      console.log(`[Scan] Market-Merge skipped: ${e.message}`);
+    }
+  }
+
+  // Deduplicate by symbol (current scan takes priority)
+  const dedup = (arr, key = "symbol") => {
+    const seen = new Set();
+    return arr.filter((item) => { const k = item[key]; if (seen.has(k)) return false; seen.add(k); return true; });
+  };
+  const kvRsS = (v) => v != null ? (v >= 10 && v <= 15 ? 3 : v >= 5 ? 2 : 1) : 0;
+  const kvEmaS = (v) => v != null ? (Math.abs(v) < 0.5 ? 3 : Math.abs(v) < 1.0 ? 2 : 1) : 0;
+  const kvRank = (r) => kvRsS(r.relStrengthVsIndex) + kvEmaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
+  kvPicks = dedup(kvPicks).sort((a, b) => kvRank(b) - kvRank(a)).slice(0, 20);
+  kvMovers = dedup(kvMovers).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
+  kvHits = dedup(kvHits).sort((a, b) => (b.swing?.total || 0) - (a.swing?.total || 0));
+
+  const mergedStats = { ...stats, breadth: mergedBreadth };
+
   // Save scan results + TA picks + movers (parallel KV writes)
   await Promise.all([
-    env.NCAPITAL_KV.put("scan:results", JSON.stringify({ hits: filtered, stats }), { expirationTtl: 259200 }),
+    env.NCAPITAL_KV.put("scan:results", JSON.stringify({ hits: kvHits, stats: mergedStats }), { expirationTtl: 259200 }),
     env.NCAPITAL_KV.put("scan:ta-picks", JSON.stringify({
-      picks: taPicks.map((r) => ({
-        symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
-        currency: r.currency, price: r.price, change: r.change, atr: r.atr,
-        ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
-        composite: r.composite, swing: { total: r.swing.total, setup: r.swing.setup, setupEmoji: r.swing.setupEmoji },
-      })),
-      movers: movers.map((r) => ({
-        symbol: r.symbol, displaySymbol: r.displaySymbol, name: r.name,
-        currency: r.currency, price: r.price, change: r.change, atr: r.atr, atrMultiple: r.atrMultiple,
-        ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
-      })),
-      stats: { totalScanned: allResults.length, longPicks: taPicks.length, movers: movers.length },
+      picks: kvPicks,
+      movers: kvMovers,
+      stats: {
+        totalScanned: allResults.length, longPicks: kvPicks.length, movers: kvMovers.length,
+        unfilteredPicks: unfilteredPicks.length,
+        scanScope,
+        marketRegime: {
+          sp500: gspcAboveSMA200 ? "bullish" : "bearish",
+          dax: gdaxiAboveSMA200 ? "bullish" : "bearish",
+        },
+        filters: ["Score \u2265 7.5", "RS 0\u201315%", "EMA20 < 2 ATR", "Index > SMA200", "Max 2/Sektor"],
+      },
       timestamp: new Date().toISOString(),
     }), { expirationTtl: 259200 }),
   ]);
 
-  console.log(`[Scan] Merged: ${allResults.length} total, ${filtered.length} hits (swing >= ${threshold}), ${taPicks.length} TA picks (LONG R:R>=1.4), ${movers.length} movers (>=3 ATR), ${stats.errors} errors`);
+  console.log(`[Scan] [${scanScope}] Merged: ${allResults.length} scanned, ${kvHits.length} hits, ${kvPicks.length} TA picks (${taPicks.length} new + ${kvPicks.length - currentPicksMapped.length} preserved), ${kvMovers.length} movers, ${stats.errors} errors`);
 
   // Trade-Setup Scanner (swing >= 78) deaktiviert — ersetzt durch TA-Scanner + Mover Alerts
 
@@ -2322,19 +2446,16 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return;
   if (!taPicks || taPicks.length === 0) return;
 
-  // Only send picks with composite score > 6.5 (high-conviction STRONG BUY)
-  const strongPicks = taPicks.filter((r) => r.composite && r.composite.compositeScore > 6.5);
-  if (strongPicks.length === 0) return;
-
+  // All picks already filtered to Score >= 7.5 in processAndNotify pipeline
   // Per-symbol cooldown: skip already-alerted symbols (6 hours)
-  const cooldownKeys = strongPicks.map((r) => `tg-ta:${r.displaySymbol}`);
+  const cooldownKeys = taPicks.map((r) => `tg-ta:${r.displaySymbol}`);
   const cooldownValues = await Promise.all(cooldownKeys.map((k) => env.NCAPITAL_KV.get(k)));
 
   const newPicks = [];
   const cooldownWrites = [];
-  for (let i = 0; i < strongPicks.length; i++) {
+  for (let i = 0; i < taPicks.length; i++) {
     if (cooldownValues[i]) continue; // Already alerted
-    newPicks.push(strongPicks[i]);
+    newPicks.push(taPicks[i]);
     cooldownWrites.push(env.NCAPITAL_KV.put(cooldownKeys[i], "1", { expirationTtl: 21600 })); // 6h cooldown
   }
   if (newPicks.length === 0) return;
@@ -2342,41 +2463,29 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
 
-  // Sort by adjustedScore descending (rewards better R:R setups)
-  newPicks.sort((a, b) => (b.composite.adjustedScore || 0) - (a.composite.adjustedScore || 0));
+  // Sort by backtested rank: RS sweet spot + EMA20 proximity + R:R
+  const rsS = (v) => v != null ? (v >= 10 && v <= 15 ? 3 : v >= 5 ? 2 : 1) : 0;
+  const emaS = (v) => v != null ? (Math.abs(v) < 0.5 ? 3 : Math.abs(v) < 1.0 ? 2 : 1) : 0;
+  const rankPick = (r) => rsS(r.relStrengthVsIndex) + emaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
+  newPicks.sort((a, b) => rankPick(b) - rankPick(a));
 
-  const lines = newPicks.slice(0, 10).map((r, i) => {
-    const c = r.composite;
-    const tp = c.tradePlan;
-    const chg = r.change >= 0 ? `+${r.change.toFixed(1)}%` : `${r.change.toFixed(1)}%`;
-
-    let line = `${i + 1}. \u{1F525} <b>${esc(r.displaySymbol)}</b>  Score <b>${c.compositeScore}</b>\n`;
-    line += `   ${fmtP(r.price)} ${r.currency} (${chg})\n`;
-    if (tp) {
-      line += `   Entry <b>${fmtP(tp.entry)}</b> \u{2502} Stop ${fmtP(tp.stop)} \u{2502} Ziel ${fmtP(tp.target)}\n`;
-      line += `   R:R <b>${tp.rr}</b> \u{2502} ${tp.shares} Stk. \u{2502} ${tp.portfolioPct}% Depot`;
-    }
-    const extParts = [];
-    if (r.ema20Distance != null) {
-      const abs = Math.abs(r.ema20Distance);
-      const dot = abs > 2.5 ? "\u{1F534}" : abs >= 1.5 ? "\u{1F7E0}" : "\u{1F7E2}";
-      extParts.push(`${dot} EMA20 ${r.ema20Distance > 0 ? "+" : ""}${r.ema20Distance.toFixed(1)} ATR`);
-    }
-    if (r.relStrengthVsIndex != null) {
-      const idx = r.symbol?.endsWith?.(".DE") ? "DAX" : "S&P";
-      extParts.push(`RS vs ${idx} ${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`);
-    }
-    if (extParts.length > 0) line += `\n   ${extParts.join(" \u{2502} ")}`;
-    return line;
+  const lines = newPicks.slice(0, 10).map((r) => {
+    const tp = r.composite?.tradePlan;
+    const rr = tp ? tp.rr : "?";
+    const rs = r.relStrengthVsIndex != null
+      ? `${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`
+      : "—";
+    return `• <b>${esc(r.displaySymbol)}</b>  R:R ${rr}  │  RS ${rs}`;
   });
 
-  const header = `\u{1F4CA} <b>TA-Scanner: ${newPicks.length} STRONG BUY</b>`;
-  const subheader = `<i>Score > 6.5 \u{2022} Depot EUR 45k \u{2022} R:R \u{2265} 1.4</i>`;
-  const msg = `${header}\n${subheader}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n\n")}\n\n<i>Composite TA Score \u{2022} ATR-basierte Levels</i>`;
+  const header = `\u{1F4CA} <b>TA-Scanner: STRONG BUY</b>`;
+  const subheader = `<i>Score \u2265 7.5 • RS 0–15% • EMA20 &lt; 2 ATR</i>`;
+  const appLink = `\n\n\u{1F517} <a href="https://nilsnoeller-tech.github.io/trading/">Details, Entry, Stop &amp; Ziel in der App</a>`;
+  const msg = `${header}\n${subheader}\n────────────\n${lines.join("\n")}${appLink}`;
 
   await sendTelegramMessages([msg], env);
   await Promise.all(cooldownWrites);
-  console.log(`[Telegram] TA picks alert sent: ${newPicks.length} STRONG BUY (filtered from ${taPicks.length} total)`);
+  console.log(`[Telegram] TA picks alert sent: ${newPicks.length} STRONG BUY (Score>7.5, filtered from ${taPicks.length} optimized picks)`);
 }
 
 // ── Telegram ATR Mover Alerts (>= 3 ATR) ──

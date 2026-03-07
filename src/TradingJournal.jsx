@@ -447,14 +447,12 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const [tradeAdded, setTradeAdded] = useState(false);
   const [addInputs, setAddInputs] = useState({ stueckzahl: "", kaufkurs: "", datum: new Date().toISOString().split("T")[0] });
   const [checkedItems, setCheckedItems] = useState({}); // { autoKey: boolean }
-  const [selectedSetup, setSelectedSetup] = useState(null); // key from MERKMALLISTE
-  const [expandedSetup, setExpandedSetup] = useState(null); // which setup card is expanded
   const totalSteps = 3; // Basisdaten, Merkmalliste, Ergebnis
   const ww = useWindowWidth();
   const isMobile = ww < 600;
 
   // ── Auto-Score Integration (Merkmalliste v2) ──
-  const { merkmalResults, loading: autoLoading, error: autoError, dataTimestamp, staleData, marketData, computeAutoScores, resetAutoScores } = useAutoScore();
+  const { merkmalResults, compositeResult, loading: autoLoading, error: autoError, dataTimestamp, staleData, marketData, computeAutoScores, resetAutoScores } = useAutoScore();
 
   // ── Prefill from Watchlist ──
   useEffect(() => {
@@ -535,31 +533,11 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
     });
   }, [merkmalResults]);
 
-  // ── Auto-select best setup based on match percentage ──
-  const setupRankings = useMemo(() => {
-    return Object.values(MERKMALLISTE).map(setup => {
-      let matched = 0, total = 0;
-      setup.criteria.forEach(c => {
-        total += c.weight;
-        if (checkedItems[c.autoKey]) matched += c.weight;
-      });
-      const pct = total > 0 ? (matched / total) * 100 : 0;
-      return { ...setup, matched, total, pct };
-    }).sort((a, b) => b.pct - a.pct);
-  }, [checkedItems]);
-
-  useEffect(() => {
-    if (!selectedSetup && setupRankings.length > 0 && setupRankings[0].pct > 0) {
-      setSelectedSetup(setupRankings[0].key);
-      setExpandedSetup(setupRankings[0].key);
-    }
-  }, [setupRankings]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const activeSetup = selectedSetup ? MERKMALLISTE[selectedSetup] : null;
+  // Setup-Ranking und Merkmalliste entfernt — Composite Score ersetzt dies
 
   const canProceed = step === 0
     ? (parseFloat(inputs.einstieg) > 0 && parseFloat(inputs.stopLoss) > 0 && parseFloat(inputs.ziel) > 0)
-    : step === 1 ? selectedSetup != null : false;
+    : step === 1 ? compositeResult != null : false;
 
   const showResults = step === 2;
 
@@ -577,16 +555,13 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const kapitaleinsatz = toEur(orderGroesse * einstieg);
   const depotAnteil = kontostand > 0 ? (kapitaleinsatz / kontostand) * 100 : 0;
 
-  // ── Score basierend auf gewaehltem Setup + Checkboxen ──
+  // ── Score basierend auf Composite Score ──
   const { totalScore, maxScore } = useMemo(() => {
-    if (!activeSetup) return { totalScore: 0, maxScore: 100 };
-    let score = 0, max = 0;
-    activeSetup.criteria.forEach(c => {
-      max += c.weight;
-      if (checkedItems[c.autoKey]) score += c.weight;
-    });
-    return { totalScore: score, maxScore: max };
-  }, [activeSetup, checkedItems]);
+    if (!compositeResult) return { totalScore: 0, maxScore: 11 };
+    // Composite Score Bereich: -11 bis +11, normalisieren auf 0-100 fuer Ampel
+    const normalized = Math.round(((compositeResult.compositeScore + 11) / 22) * 100);
+    return { totalScore: normalized, maxScore: 100 };
+  }, [compositeResult]);
 
   const scorePct = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
 
@@ -627,7 +602,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const minCrv = ampelResult.ampel === "GRÜN" ? 1.5 : ampelResult.ampel === "ORANGE" ? 2.0 : ampelResult.ampel === "ROT" ? 3.0 : Infinity;
 
   const reset = () => {
-    setStep(0); setCheckedItems({}); setSelectedSetup(null); setExpandedSetup(null);
+    setStep(0); setCheckedItems({});
     setTradeAdded(false);
     setInputs({ symbol: "", waehrung: "EUR", kontostand: String(Math.round(portfolio.kapital * 100) / 100), risikoPct: "1", wechselkurs: "", einstieg: "", stopLoss: "", ziel: "" });
     setAddInputs({ stueckzahl: "", kaufkurs: "", datum: new Date().toISOString().split("T")[0] });
@@ -661,8 +636,8 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
         symbol: inputs.symbol.toUpperCase(),
         stopLoss: slEur,
         ziel: zielEur,
-        setup: activeSetup?.label || "Unbekannt",
         score: totalScore,
+        ...(compositeResult && { compositeScore: compositeResult.compositeScore, compositeBreakdown: compositeResult.breakdown }),
         ampel,
         historical: false,
         waehrung: "EUR",
@@ -692,7 +667,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
           <div style={{ height: "100%", borderRadius: 2, background: `linear-gradient(90deg, ${C.accent}, ${C.accentLight})`, width: `${progressPct}%`, transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)" }} />
         </div>
         <div style={{ display: "flex", gap: 4, marginTop: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          {["Basisdaten", "Merkmalliste", "Ergebnis"].map((_, i) => (
+          {["Basisdaten", "Composite Score", "Ergebnis"].map((_, i) => (
             <div key={i} onClick={() => { if (i < step) setStep(i); }} style={{
               width: (showResults ? i === 2 : i === step) ? 24 : 8, height: 8, borderRadius: 4,
               cursor: i < step ? "pointer" : "default",
@@ -979,136 +954,99 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
         </>
       )}
 
-      {/* ── MERKMALLISTE STEP ── */}
+      {/* ── COMPOSITE SCORE STEP ── */}
       {step === 1 && !showResults && (
         <div style={{ animation: "fadeIn 0.4s ease-out" }}>
           <GlassCard style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
               <div style={{ width: 48, height: 48, borderRadius: 14, background: `${C.accent}15`, border: `1px solid ${C.accent}30`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Target size={22} color={C.accent} />
+                <BarChart2 size={22} color={C.accent} />
               </div>
               <div>
-                <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text }}>Merkmalliste</div>
-                <div style={{ fontSize: 13, color: C.textMuted }}>Setup-Typ waehlen und Kriterien pruefen</div>
+                <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text }}>Composite Score</div>
+                <div style={{ fontSize: 13, color: C.textMuted }}>Automatische Analyse aus 5 Faktoren</div>
               </div>
             </div>
-            {merkmalResults && (
+            {compositeResult && (
               <div style={{ padding: "8px 12px", borderRadius: 8, background: `${C.green}08`, border: `1px solid ${C.green}20`, fontSize: 12, color: C.green, display: "flex", alignItems: "center", gap: 6 }}>
-                <Zap size={12} /> Auto-Analyse aktiv — Kriterien vorausgefuellt
+                <Zap size={12} /> Score berechnet: {compositeResult.compositeScore.toFixed(1)} / 11.0 ({compositeResult.confidence})
+              </div>
+            )}
+            {autoLoading && (
+              <div style={{ padding: "8px 12px", borderRadius: 8, background: `${C.accent}08`, border: `1px solid ${C.accent}20`, fontSize: 12, color: C.accent, display: "flex", alignItems: "center", gap: 6 }}>
+                <RotateCcw size={12} style={{ animation: "spin 1s linear infinite" }} /> Marktdaten werden geladen...
+              </div>
+            )}
+            {autoError && (
+              <div style={{ padding: "8px 12px", borderRadius: 8, background: `${C.red}08`, border: `1px solid ${C.red}20`, fontSize: 12, color: C.red }}>
+                Fehler: {autoError}
               </div>
             )}
           </GlassCard>
 
-          {setupRankings.map(setup => {
-            const isSelected = selectedSetup === setup.key;
-            const isExpanded = expandedSetup === setup.key;
-            return (
-              <div key={setup.key} style={{ marginBottom: 12 }}>
-                <div
-                  onClick={() => { setSelectedSetup(setup.key); setExpandedSetup(isExpanded ? null : setup.key); }}
-                  style={{
-                    padding: "14px 18px", borderRadius: isExpanded ? "14px 14px 0 0" : 14, cursor: "pointer",
-                    background: isSelected ? `linear-gradient(135deg, ${setup.color}12, ${setup.color}06)` : "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
-                    border: `2px solid ${isSelected ? setup.color + "60" : C.border}`,
-                    borderBottom: isExpanded ? `1px solid ${C.border}` : undefined,
-                    transition: "all 0.25s", display: "flex", alignItems: "center", gap: 14,
-                  }}
-                >
-                  <span style={{ fontSize: 24 }}>{setup.emoji}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: isSelected ? C.text : C.textMuted }}>{setup.label}</div>
-                    <div style={{ fontSize: 12, color: C.textDim }}>{setup.desc}</div>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {compositeResult && compositeResult.breakdown && (() => {
+            const factors = [
+              { key: "trend", label: "Trend", emoji: "\uD83D\uDCC8", max: 6, color: C.green, desc: "Daily \u00D7 1.5 + Weekly \u00D7 1.0 + Monthly \u00D7 0.5" },
+              { key: "rsi", label: "RSI", emoji: "\uD83D\uDCCA", max: 1.5, color: C.accent, desc: "Relative Strength Index" },
+              { key: "macd", label: "MACD", emoji: "\u26A1", max: 1.0, color: C.yellow, desc: "MACD Histogramm" },
+              { key: "ma", label: "MA Alignment", emoji: "\uD83C\uDFAF", max: 2.0, color: C.blue, desc: "SMA20 / SMA50 / SMA200 Ordnung" },
+              { key: "volume", label: "Volume", emoji: "\uD83D\uDD0A", max: 1.0, color: "#E056A0", desc: "Volumen vs. 20-Tage-Durchschnitt" },
+            ];
+            return factors.map(f => {
+              const bd = compositeResult.breakdown[f.key];
+              if (!bd) return null;
+              const pct = f.max > 0 ? Math.max(0, Math.min(100, ((bd.score + f.max) / (2 * f.max)) * 100)) : 50;
+              const isPositive = bd.score > 0;
+              const isNegative = bd.score < 0;
+              return (
+                <GlassCard key={f.key} style={{ marginBottom: 10, padding: "14px 18px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                    <span style={{ fontSize: 20 }}>{f.emoji}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{f.label}</div>
+                      <div style={{ fontSize: 11, color: C.textDim }}>{f.desc}</div>
+                    </div>
                     <div style={{
-                      padding: "4px 10px", borderRadius: 8, fontSize: 14, fontWeight: 700,
-                      color: setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim,
-                      background: `${setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim}10`,
+                      padding: "4px 12px", borderRadius: 8, fontSize: 16, fontWeight: 800,
+                      color: isPositive ? C.green : isNegative ? C.red : C.textMuted,
+                      background: `${isPositive ? C.green : isNegative ? C.red : C.textMuted}10`,
                     }}>
-                      {Math.round(setup.pct)}%
+                      {bd.score > 0 ? "+" : ""}{bd.score.toFixed(1)}
                     </div>
-                    {isSelected && (
-                      <div style={{ padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700, color: setup.color, background: `${setup.color}15`, border: `1px solid ${setup.color}25` }}>
-                        AKTIV
-                      </div>
-                    )}
-                    <ChevronDown size={16} color={C.textDim} style={{ transform: isExpanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s" }} />
+                    <div style={{ fontSize: 11, color: C.textDim, fontWeight: 600 }}>/ {"\u00B1"}{f.max}</div>
                   </div>
-                </div>
-
-                {isExpanded && (
-                  <div style={{
-                    padding: "12px 18px", borderRadius: "0 0 14px 14px",
-                    background: "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
-                    border: `2px solid ${isSelected ? setup.color + "60" : C.border}`, borderTop: "none",
-                  }}>
-                    {setup.criteria.map((c, ci) => {
-                      const checked = !!checkedItems[c.autoKey];
-                      const autoResult = merkmalResults?.[c.autoKey];
-                      return (
-                        <div key={c.autoKey}
-                          onClick={() => setCheckedItems(prev => ({ ...prev, [c.autoKey]: !prev[c.autoKey] }))}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 12, padding: "10px 8px",
-                            borderBottom: ci < setup.criteria.length - 1 ? `1px solid ${C.border}40` : "none",
-                            cursor: "pointer", transition: "background 0.15s",
-                          }}
-                        >
-                          <div style={{
-                            width: 22, height: 22, borderRadius: 6, flexShrink: 0,
-                            border: `2px solid ${checked ? C.green : C.borderLight}`,
-                            background: checked ? C.green : "transparent",
-                            display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s",
-                          }}>
-                            {checked && <CheckCircle size={14} color="#fff" />}
-                          </div>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 14, fontWeight: 600, color: checked ? C.text : C.textMuted }}>{c.label}</div>
-                            {autoResult && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>{autoResult.detail}</div>}
-                          </div>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: checked ? C.green : C.textDim, flexShrink: 0 }}>
-                            {checked ? `+${c.weight}` : c.weight}
-                          </div>
-                          {autoResult && (
-                            <div style={{
-                              padding: "2px 6px", borderRadius: 4, fontSize: 9, fontWeight: 700,
-                              color: autoResult.value ? C.green : C.red,
-                              background: `${autoResult.value ? C.green : C.red}12`,
-                            }}>
-                              {autoResult.value ? "AUTO" : "AUTO"}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {setup.invalidators?.length > 0 && (
-                      <div style={{ marginTop: 8, padding: "8px 0" }}>
-                        {setup.invalidators.map(inv => {
-                          const triggered = inv.inverted ? !checkedItems[inv.autoKey] : !!checkedItems[inv.autoKey];
-                          return (
-                            <div key={inv.autoKey + "-inv"} style={{
-                              display: "flex", alignItems: "center", gap: 8, padding: "8px",
-                              borderRadius: 8, background: triggered ? `${C.red}10` : "transparent",
-                            }}>
-                              <XCircle size={14} color={triggered ? C.red : C.textDim} />
-                              <span style={{ fontSize: 12, fontWeight: 600, color: triggered ? C.red : C.textDim }}>{inv.label}</span>
-                              {triggered && <span style={{ fontSize: 11, color: C.red, marginLeft: "auto", fontWeight: 700 }}>INVALIDIERT</span>}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: `${setup.color}08`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: setup.color }}>Score: {setup.matched}/{setup.total}</span>
-                      <span style={{ fontSize: 14, fontWeight: 800, color: setup.pct >= 75 ? C.green : setup.pct >= 50 ? C.orange : C.textDim }}>{Math.round(setup.pct)}%</span>
-                    </div>
+                  {/* Score Bar */}
+                  <div style={{ height: 6, background: C.border, borderRadius: 3, position: "relative", overflow: "hidden" }}>
+                    <div style={{
+                      position: "absolute", left: `${Math.min(pct, 50)}%`, height: "100%",
+                      width: `${Math.abs(pct - 50)}%`,
+                      background: isPositive ? C.green : isNegative ? C.red : C.textDim,
+                      borderRadius: 3, transition: "all 0.5s",
+                    }} />
+                    <div style={{ position: "absolute", left: "50%", top: -2, width: 2, height: 10, background: C.textDim, borderRadius: 1 }} />
                   </div>
-                )}
+                  <div style={{ fontSize: 11, color: C.textDim, marginTop: 6 }}>{bd.detail}</div>
+                </GlassCard>
+              );
+            });
+          })()}
+
+          {compositeResult && (
+            <GlassCard style={{ marginTop: 4, textAlign: "center", background: `linear-gradient(135deg, ${compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red}08, ${C.card})` }}>
+              <div style={{ fontSize: 13, color: C.textMuted, fontWeight: 600, marginBottom: 4 }}>Composite Score</div>
+              <div style={{ fontSize: 36, fontWeight: 800, color: compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red }}>
+                {compositeResult.compositeScore.toFixed(1)}
               </div>
-            );
-          })}
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 16px", borderRadius: 20, marginTop: 8,
+                fontSize: 13, fontWeight: 700,
+                color: compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red,
+                background: `${compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red}15`,
+              }}>
+                {compositeResult.confidence}
+              </div>
+            </GlassCard>
+          )}
         </div>
       )}
 
@@ -1139,8 +1077,8 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
                   style={{ transition: "stroke-dasharray 1s cubic-bezier(0.4,0,0.2,1)" }} />
               </svg>
               <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                <span style={{ fontSize: 48, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{totalScore}</span>
-                <span style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>von {maxScore}</span>
+                <span style={{ fontSize: 48, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>{compositeResult ? compositeResult.compositeScore.toFixed(1) : totalScore}</span>
+                <span style={{ fontSize: 13, color: C.textMuted, marginTop: 4 }}>{compositeResult ? "/ 11.0" : `von ${maxScore}`}</span>
               </div>
             </div>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 24px", borderRadius: 24, background: `${scoreColor}15`, border: `1px solid ${scoreColor}30`, color: scoreColor, fontSize: 15, fontWeight: 700 }}>
@@ -1214,52 +1152,37 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
             </div>
           </GlassCard>
 
-          {/* Setup-Kategorisierung */}
+          {/* Composite Score Breakdown */}
+          {compositeResult && compositeResult.breakdown && (
           <GlassCard>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 4 }}>Setup-Ranking</div>
-            <div style={{ fontSize: 13, color: C.textDim, marginBottom: 20 }}>Basierend auf der Merkmalliste:</div>
-            {setupRankings.map((s, i) => {
-              const best = s.key === selectedSetup;
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 16 }}>Score-Faktoren</div>
+            {[
+              { key: "trend", label: "Trend", emoji: "\uD83D\uDCC8", max: 6, color: C.green },
+              { key: "rsi", label: "RSI", emoji: "\uD83D\uDCCA", max: 1.5, color: C.accent },
+              { key: "macd", label: "MACD", emoji: "\u26A1", max: 1.0, color: C.yellow },
+              { key: "ma", label: "MA Alignment", emoji: "\uD83C\uDFAF", max: 2.0, color: C.blue },
+              { key: "volume", label: "Volume", emoji: "\uD83D\uDD0A", max: 1.0, color: "#E056A0" },
+            ].map(f => {
+              const bd = compositeResult.breakdown[f.key];
+              if (!bd) return null;
+              const pct = f.max > 0 ? Math.max(0, Math.min(100, ((bd.score + f.max) / (2 * f.max)) * 100)) : 50;
+              const barColor = bd.score > 0 ? C.green : bd.score < 0 ? C.red : C.textDim;
               return (
-                <div key={s.key} style={{
-                  padding: isMobile ? "12px 14px" : "14px 18px", borderRadius: 12, marginBottom: 10,
-                  background: best ? `${s.color}10` : "rgba(10,13,17,0.3)",
-                  border: `2px solid ${best ? s.color + "50" : C.border}`,
-                  display: "flex", alignItems: "center", gap: isMobile ? 10 : 14, transition: "all 0.3s",
-                }}>
-                  <span style={{ fontSize: 28 }}>{s.emoji}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: best ? C.text : C.textMuted }}>{s.label}</span>
-                      {best && <Badge color={s.color}>Gewaehlt</Badge>}
-                    </div>
-                    {!isMobile && <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{s.desc}</div>}
+                <div key={f.key} style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                    <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{f.emoji} {f.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: barColor }}>{bd.score > 0 ? "+" : ""}{bd.score.toFixed(1)} / {"\u00B1"}{f.max}</span>
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: best ? s.color : C.textDim, flexShrink: 0 }}>{Math.round(s.pct)}%</div>
-                </div>
-              );
-            })}
-          </GlassCard>
-
-          {/* Kriterien-Uebersicht */}
-          {activeSetup && (
-          <GlassCard>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 16 }}>
-              {activeSetup.emoji} {activeSetup.label} — Kriterien
-            </div>
-            {activeSetup.criteria.map(c => {
-              const checked = !!checkedItems[c.autoKey];
-              const pct = checked ? 100 : 0;
-              const barColor = checked ? C.green : C.red;
-              return (
-                <div key={c.autoKey} style={{ marginBottom: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                    <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 500 }}>{c.label}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: barColor }}>{checked ? c.weight : 0}/{c.weight}</span>
+                  <div style={{ height: 6, borderRadius: 3, background: C.border, overflow: "hidden", position: "relative" }}>
+                    <div style={{
+                      position: "absolute", left: `${Math.min(pct, 50)}%`, height: "100%",
+                      width: `${Math.abs(pct - 50)}%`,
+                      background: `linear-gradient(90deg, ${barColor}, ${barColor}AA)`,
+                      borderRadius: 3, transition: "width 0.6s",
+                    }} />
+                    <div style={{ position: "absolute", left: "50%", top: -1, width: 1, height: 8, background: C.textDim }} />
                   </div>
-                  <div style={{ height: 6, borderRadius: 3, background: C.border, overflow: "hidden" }}>
-                    <div style={{ height: "100%", borderRadius: 3, width: `${pct}%`, background: `linear-gradient(90deg, ${barColor}, ${barColor}AA)`, transition: "width 0.6s" }} />
-                  </div>
+                  <div style={{ fontSize: 10, color: C.textDim, marginTop: 3 }}>{bd.detail}</div>
                 </div>
               );
             })}
@@ -1278,13 +1201,13 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
               <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 20 }}>
                 {[
                   { label: "Symbol", value: inputs.symbol.toUpperCase() },
-                  { label: "Setup", value: activeSetup?.label || "—" },
+                  { label: "Composite", value: compositeResult ? compositeResult.compositeScore.toFixed(1) : "\u2014" },
                   { label: "Ampel", value: ampel, color: scoreColor },
                   { label: "CRV", value: fmt(crv, 1) + "x" },
-                  { label: "Einstieg", value: isUsd ? `€${fmt(einstieg * wechselkurs)}` : `€${fmt(einstieg)}`, sub: isUsd ? `($${fmt(einstieg)})` : null },
-                  { label: "Stop-Loss", value: isUsd ? `€${fmt(sl * wechselkurs)}` : `€${fmt(sl)}`, sub: isUsd ? `($${fmt(sl)})` : null },
-                  { label: "Ziel", value: isUsd ? `€${fmt(ziel * wechselkurs)}` : `€${fmt(ziel)}`, sub: isUsd ? `($${fmt(ziel)})` : null },
-                  { label: "Score", value: `${totalScore}/${maxScore}` },
+                  { label: "Einstieg", value: isUsd ? `\u20AC${fmt(einstieg * wechselkurs)}` : `\u20AC${fmt(einstieg)}`, sub: isUsd ? `($${fmt(einstieg)})` : null },
+                  { label: "Stop-Loss", value: isUsd ? `\u20AC${fmt(sl * wechselkurs)}` : `\u20AC${fmt(sl)}`, sub: isUsd ? `($${fmt(sl)})` : null },
+                  { label: "Ziel", value: isUsd ? `\u20AC${fmt(ziel * wechselkurs)}` : `\u20AC${fmt(ziel)}`, sub: isUsd ? `($${fmt(ziel)})` : null },
+                  { label: "Score", value: compositeResult ? `${compositeResult.compositeScore.toFixed(1)} / 11` : `${totalScore}/${maxScore}` },
                 ].map((item, i) => (
                   <div key={i} style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(10,13,17,0.4)", border: `1px solid ${C.border}` }}>
                     <div style={{ fontSize: 10, color: C.textDim, textTransform: "uppercase", fontWeight: 600, marginBottom: 2 }}>{item.label}</div>
@@ -1489,7 +1412,7 @@ const Dashboard = ({ portfolio }) => {
 // ════════════════════════════════════════════════════════════════
 // ─── TRADE LOG ───
 // ════════════════════════════════════════════════════════════════
-const SETUP_OPTIONS = ["Trend-Pullback", "Breakout", "Range", "Bounce", "Manuell"];
+// SETUP_OPTIONS entfernt — Setup-Namen werden nicht mehr angezeigt
 
 const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
   const [filter, setFilter] = useState("Alle");
@@ -1501,7 +1424,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
   const [deleteConfirm, setDeleteConfirm] = useState(null); // tradeId awaiting delete confirmation
   const [newTradeModal, setNewTradeModal] = useState(false);
   const [newTradeInputs, setNewTradeInputs] = useState({
-    symbol: "", waehrung: "EUR", wechselkurs: "", setup: "Manuell", botScore: "",
+    symbol: "", waehrung: "EUR", wechselkurs: "", botScore: "",
     stopLoss: "", ziel: "", datum: new Date().toISOString().split("T")[0], stueckzahl: "", kaufkurs: "",
   });
   const [screenshotUrls, setScreenshotUrls] = useState({}); // { tradeId: objectUrl }
@@ -1551,12 +1474,11 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
       id: tradeId,
       symbol: newTradeInputs.symbol.toUpperCase().trim(),
       stopLoss: slEur, ziel: zielEur,
-      setup: newTradeInputs.setup,
       score: botScore,
       ampel,
       historical: false,
       waehrung: "EUR",
-      ...(botScore > 0 && { botScore, botSetup: newTradeInputs.setup }),
+      ...(botScore > 0 && { botScore }),
       ...(isUsd && { originalWaehrung: "USD", usdWechselkurs: fx }),
       ...(screenshotId && { screenshotId }),
       transactions: [{ type: "buy", datum: newTradeInputs.datum, stueck, kurs: kkEur }],
@@ -1564,7 +1486,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
     onAddTrade(newTrade);
     setNewTradeModal(false);
     setPendingScreenshot(null);
-    setNewTradeInputs({ symbol: "", waehrung: "EUR", wechselkurs: "", setup: "Manuell", botScore: "", stopLoss: "", ziel: "", datum: new Date().toISOString().split("T")[0], stueckzahl: "", kaufkurs: "" });
+    setNewTradeInputs({ symbol: "", waehrung: "EUR", wechselkurs: "", botScore: "", stopLoss: "", ziel: "", datum: new Date().toISOString().split("T")[0], stueckzahl: "", kaufkurs: "" });
   };
 
   const enriched = useMemo(() => tradeList.map(t => {
@@ -1800,14 +1722,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
                 style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", textTransform: "uppercase" }} />
             </div>
             <div>
-              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Setup</label>
-              <select value={newTradeInputs.setup} onChange={e => setNewTradeInputs(p => ({ ...p, setup: e.target.value }))}
-                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", appearance: "none", WebkitAppearance: "none" }}>
-                {SETUP_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Score (optional)</label>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Composite Score (optional)</label>
               <input type="number" min="0" max="100" value={newTradeInputs.botScore} onChange={e => setNewTradeInputs(p => ({ ...p, botScore: e.target.value }))} placeholder="0-100"
                 style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
             </div>
@@ -2023,20 +1938,12 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
               </div>
             </div>
           </div>
-          {/* Bot-Score & Setup */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginTop: 12 }}>
+          {/* Composite Score */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 12 }}>
             <div>
-              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Score (optional)</label>
+              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Composite Score (optional)</label>
               <input type="number" min="0" max="100" value={editInputs.botScore} onChange={e => setEditInputs(p => ({ ...p, botScore: e.target.value }))} placeholder="0-100"
                 style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box" }} />
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: C.textMuted, marginBottom: 6, fontWeight: 600 }}>Bot Setup</label>
-              <select value={editInputs.botSetup} onChange={e => setEditInputs(p => ({ ...p, botSetup: e.target.value }))}
-                style={{ width: "100%", padding: "10px 12px", background: "rgba(10,13,17,0.6)", border: `1px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 14, fontWeight: 500, outline: "none", boxSizing: "border-box", appearance: "none", WebkitAppearance: "none" }}>
-                <option value="">—</option>
-                {SETUP_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
             </div>
           </div>
           {editInputs.waehrung === "USD" && (
@@ -2137,7 +2044,7 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: isMobile ? 750 : "auto" }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                {["", "Datum", "Symbol", "Setup", "Ø Kauf", "Stop", "Ziel", "Ø Verk.", "Pos.", "Ergebnis", "R", "Score", "Aktion"].map(h => (
+                {["", "Datum", "Symbol", "Ø Kauf", "Stop", "Ziel", "Ø Verk.", "Pos.", "Ergebnis", "R", "Score", "Aktion"].map(h => (
                   <th key={h} style={{ padding: "14px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.05em", background: "rgba(10,13,17,0.5)", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -2170,7 +2077,6 @@ const TradeLog = ({ tradeList, onUpdateTrade, onDeleteTrade, onAddTrade }) => {
                           </div>
                         </div>
                       </td>
-                      <td style={{ padding: "10px 12px" }}><Badge color={C.blue}>{t.setup}</Badge></td>
                       <td style={{ padding: "10px 12px", color: C.text, fontWeight: 500 }}>€{fmt(t.avgKaufkurs)}</td>
                       <td style={{ padding: "10px 12px", color: C.red, fontWeight: 500 }}>€{fmt(t.stopLoss)}</td>
                       <td style={{ padding: "10px 12px", color: C.green, fontWeight: 500 }}>€{fmt(t.ziel)}</td>

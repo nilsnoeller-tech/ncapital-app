@@ -3,7 +3,7 @@
 
 import { useState, useCallback } from "react";
 import { fetchOHLCV, fetchIndexData } from "../services/marketData";
-import { evaluateMerkmalliste } from "../services/indicators";
+import { evaluateMerkmalliste, computeCompositeScoreFrontend } from "../services/indicators";
 
 /**
  * @returns {{
@@ -19,6 +19,7 @@ import { evaluateMerkmalliste } from "../services/indicators";
  */
 export function useAutoScore() {
   const [merkmalResults, setMerkmalResults] = useState(null);
+  const [compositeResult, setCompositeResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [dataTimestamp, setDataTimestamp] = useState(null);
@@ -76,6 +77,10 @@ export function useAutoScore() {
       // Merkmalliste auswerten
       const results = evaluateMerkmalliste(candles, entryPrice, indexCandles);
 
+      // Composite Score berechnen
+      const composite = computeCompositeScoreFrontend(candles);
+      setCompositeResult(composite);
+
       setMerkmalResults(results);
       setMarketData({
         symbol: yahooSymbol,
@@ -99,6 +104,7 @@ export function useAutoScore() {
 
   const resetAutoScores = useCallback(() => {
     setMerkmalResults(null);
+    setCompositeResult(null);
     setError(null);
     setDataTimestamp(null);
     setStaleData(false);
@@ -107,6 +113,7 @@ export function useAutoScore() {
 
   return {
     merkmalResults,
+    compositeResult,
     loading,
     error,
     dataTimestamp,

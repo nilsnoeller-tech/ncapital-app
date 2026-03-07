@@ -391,3 +391,147 @@ export function evaluateMerkmalliste(candles, entryPrice, indexCandles = null) {
 
   return results;
 }
+
+// ─── Composite Score (Frontend-Version, identisch zu worker.js computeCompositeScore) ───
+// Score range: ~-11.0 to ~+11.0 (Trend D*1.5+W*1.0+M*0.5 + RSI + MACD + Volume + MA)
+
+export function computeCompositeScoreFrontend(candles) {
+  if (!candles || candles.length < 60) return null;
+
+  const closes = candles.map(c => c.close);
+  const price = closes[closes.length - 1];
+  const last = candles[candles.length - 1];
+
+  // Indikatoren
+  const ema20Arr = EMA.calculate({ values: closes, period: 20 });
+  const sma20Arr = SMA.calculate({ values: closes, period: 20 });
+  const sma50Arr = SMA.calculate({ values: closes, period: 50 });
+  const sma200Arr = closes.length >= 200 ? SMA.calculate({ values: closes, period: 200 }) : [];
+  const rsiArr = RSI.calculate({ values: closes, period: 14 });
+
+  const sma20 = sma20Arr.length > 0 ? sma20Arr[sma20Arr.length - 1] : price;
+  const sma50 = sma50Arr.length > 0 ? sma50Arr[sma50Arr.length - 1] : price;
+  const sma200 = sma200Arr.length > 0 ? sma200Arr[sma200Arr.length - 1] : null;
+  const rsi = rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : 50;
+
+  // MACD berechnen (12, 26, 9)
+  const ema12 = EMA.calculate({ values: closes, period: 12 });
+  const ema26 = EMA.calculate({ values: closes, period: 26 });
+  const macdLine = [];
+  const offset = ema12.length - ema26.length;
+  for (let i = 0; i < ema26.length; i++) {
+    macdLine.push(ema12[i + offset] - ema26[i]);
+  }
+  const signalLine = macdLine.length >= 9 ? EMA.calculate({ values: macdLine, period: 9 }) : [];
+  const histOffset = macdLine.length - signalLine.length;
+  const macdHist = signalLine.map((s, i) => macdLine[i + histOffset] - s);
+
+  // Volume Ratio
+  const volumes = candles.map(c => c.volume || 0);
+  const vol20 = volumes.slice(-20);
+  const avgVol = vol20.length > 0 ? vol20.reduce((a, b) => a + b, 0) / vol20.length : 1;
+  const lastVol = volumes[volumes.length - 1] || 0;
+  const volRatio = avgVol > 0 ? lastVol / avgVol : 1;
+  const lastIsRed = last.close < last.open;
+
+  // 1. TREND (Daily*1.5 + Weekly*1.0 + Monthly*0.5, max +/-6)
+  let dailyTrend = 0;
+  if (sma20Arr.length >= 2) {
+    const sma20Slope = (sma20 - sma20Arr[sma20Arr.length - 2]) / sma20Arr[sma20Arr.length - 2] * 100;
+    if (price > sma20 && sma20 > sma50 && (sma200 ? sma50 > sma200 : true) && sma20Slope > 0.3) {
+      dailyTrend = 2;
+    } else if (price > (sma200 || sma50) && sma20Slope >= 0) {
+      dailyTrend = 1;
+    } else if (price < sma50 && price < sma20 && sma20 < sma50 && sma20Slope < -0.3) {
+      dailyTrend = -2;
+    } else if (price < (sma200 || sma50)) {
+      dailyTrend = -1;
+    }
+  }
+
+  let weeklyTrend = 0;
+  if (sma200 && closes.length >= 60) {
+    const sma50arr10ago = SMA.calculate({ values: closes.slice(0, -10), period: 50 });
+    const sma50slope = sma50arr10ago.length > 0
+      ? (sma50 - sma50arr10ago[sma50arr10ago.length - 1]) / sma50arr10ago[sma50arr10ago.length - 1] * 100
+      : 0;
+    if (sma50 > sma200 && sma50slope > 0.2) weeklyTrend = 2;
+    else if (sma50 > sma200) weeklyTrend = 1;
+    else if (sma50 < sma200 && sma50slope < -0.2) weeklyTrend = -2;
+    else if (sma50 < sma200) weeklyTrend = -1;
+  } else {
+    weeklyTrend = dailyTrend > 0 ? 1 : dailyTrend < 0 ? -1 : 0;
+  }
+
+  let monthlyTrend = 0;
+  if (sma200 && closes.length >= 220) {
+    const sma200arr20ago = SMA.calculate({ values: closes.slice(0, -20), period: 200 });
+    const sma200slope = sma200arr20ago.length > 0
+      ? (sma200 - sma200arr20ago[sma200arr20ago.length - 1]) / sma200arr20ago[sma200arr20ago.length - 1] * 100
+      : 0;
+    if (price > sma200 && sma200slope > 0.1) monthlyTrend = 2;
+    else if (price > sma200) monthlyTrend = 1;
+    else if (price < sma200 && sma200slope < -0.1) monthlyTrend = -2;
+    else if (price < sma200) monthlyTrend = -1;
+  } else {
+    monthlyTrend = weeklyTrend;
+  }
+
+  const trendScore = Math.round((dailyTrend * 1.5 + weeklyTrend * 1.0 + monthlyTrend * 0.5) * 10) / 10;
+
+  // 2. RSI (+/-1.5)
+  let rsiScore = 0;
+  if (rsi < 30) rsiScore = 1.5;
+  else if (rsi < 40) rsiScore = 0.5;
+  else if (rsi > 70) rsiScore = -1.5;
+  else if (rsi > 60) rsiScore = -0.3;
+
+  // 3. MACD Histogram (+/-1.0)
+  let macdScore = 0;
+  if (macdHist.length > 0) {
+    macdScore = macdHist[macdHist.length - 1] > 0 ? 1.0 : -1.0;
+  }
+
+  // 4. MA Alignment (+/-2.0)
+  let maScore = 0;
+  if (sma200) {
+    if (price > sma20 && sma20 > sma50 && sma50 > sma200) maScore = 2.0;
+    else if (price < sma20 && sma20 < sma50 && sma50 < sma200) maScore = -2.0;
+    else if (price > sma200) maScore = 0.5;
+    else if (price < sma200) maScore = -0.5;
+  } else {
+    if (price > sma20 && sma20 > sma50) maScore = 1.5;
+    else if (price < sma20 && sma20 < sma50) maScore = -1.5;
+    else if (price > sma50) maScore = 0.5;
+    else maScore = -0.5;
+  }
+
+  // 5. Volume (+/-1.0)
+  let volumeScore = 0;
+  if (volRatio >= 1.5 && !lastIsRed) volumeScore = 1.0;
+  else if (volRatio >= 1.2 && !lastIsRed) volumeScore = 0.5;
+  else if (volRatio >= 1.5 && lastIsRed) volumeScore = -1.0;
+  else if (volRatio >= 1.2 && lastIsRed) volumeScore = -0.5;
+
+  const compositeScore = Math.round((trendScore + rsiScore + macdScore + maScore + volumeScore) * 10) / 10;
+
+  let confidence;
+  if (compositeScore >= 5) confidence = "STRONG BUY";
+  else if (compositeScore >= 2) confidence = "BUY";
+  else if (compositeScore >= -2) confidence = "NEUTRAL";
+  else if (compositeScore >= -5) confidence = "SELL";
+  else confidence = "STRONG SELL";
+
+  return {
+    compositeScore,
+    confidence,
+    breakdown: {
+      trend: { score: trendScore, max: 6, detail: `Daily ${dailyTrend > 0 ? "+" : ""}${dailyTrend} \u00D7 1.5, Weekly ${weeklyTrend > 0 ? "+" : ""}${weeklyTrend} \u00D7 1.0, Monthly ${monthlyTrend > 0 ? "+" : ""}${monthlyTrend} \u00D7 0.5` },
+      rsi: { score: rsiScore, max: 1.5, detail: `RSI ${rsi.toFixed(1)}` },
+      macd: { score: macdScore, max: 1.0, detail: `MACD Histogramm ${macdHist.length > 0 ? (macdHist[macdHist.length - 1] > 0 ? "positiv" : "negativ") : "n/a"}` },
+      ma: { score: maScore, max: 2.0, detail: `SMA20 ${sma20.toFixed(0)}, SMA50 ${sma50.toFixed(0)}${sma200 ? ", SMA200 " + sma200.toFixed(0) : ""}` },
+      volume: { score: volumeScore, max: 1.0, detail: `Vol-Ratio ${volRatio.toFixed(2)}x${lastIsRed ? " (rot)" : " (gr\u00FCn)"}` },
+    },
+    indicators: { rsi, sma20, sma50, sma200, price, volRatio },
+  };
+}

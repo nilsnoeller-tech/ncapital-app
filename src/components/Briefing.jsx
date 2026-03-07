@@ -243,10 +243,7 @@ export default function Briefing({ onNavigate }) {
             <ScannerHitsSection hits={briefing.scannerHits} isMobile={isMobile} onNavigate={onNavigate} />
           )}
 
-          {/* ── Swing-Trade Setups ── */}
-          {briefing.tradeSetups?.length > 0 && (
-            <TradeSetupsSection setups={briefing.tradeSetups} isMobile={isMobile} onNavigate={onNavigate} />
-          )}
+          {/* TradeSetupsSection entfernt — TA-Picks-Section zeigt Composite-Score-Picks */}
 
           {/* ── Futures ── */}
           {briefing.futures && (
