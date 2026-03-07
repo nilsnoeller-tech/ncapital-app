@@ -243,17 +243,6 @@ function base64urlDecode(str) {
   return bytes;
 }
 
-async function hashPassword(password, salt) {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: enc.encode(salt), iterations: 100000, hash: "SHA-256" },
-    keyMaterial,
-    256,
-  );
-  return base64urlEncode(bits);
-}
-
 async function createJWT(payload, secret) {
   const header = { alg: "HS256", typ: "JWT" };
   const enc = new TextEncoder();
@@ -282,49 +271,130 @@ async function verifyJWT(token, secret) {
 
 // ─── Auth Route Handler ───
 
+// ─── Magic Link E-Mail senden ───
+
+const APP_URL = "https://nilsnoeller-tech.github.io/trading/";
+
+async function sendMagicLinkEmail(email, magicToken, env) {
+  const magicUrl = `${APP_URL}?magic_token=${magicToken}`;
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;padding:32px 20px;">
+      <div style="text-align:center;margin-bottom:28px;">
+        <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#6C5CE7,#A29BFE);display:inline-flex;align-items:center;justify-content:center;">
+          <span style="color:#fff;font-size:22px;font-weight:800;">N</span>
+        </div>
+        <div style="font-size:20px;font-weight:800;color:#1a1a2e;margin-top:12px;">N-Capital</div>
+      </div>
+      <div style="background:#f8f9fa;border-radius:12px;padding:28px 24px;text-align:center;">
+        <p style="font-size:15px;color:#333;margin:0 0 20px;">Klicke den Button um dich einzuloggen:</p>
+        <a href="${magicUrl}" style="display:inline-block;padding:12px 32px;border-radius:8px;background:linear-gradient(135deg,#6C5CE7,#A29BFE);color:#fff;font-size:15px;font-weight:700;text-decoration:none;">
+          Jetzt einloggen
+        </a>
+        <p style="font-size:12px;color:#888;margin:20px 0 0;">Der Link ist 15 Minuten gueltig und kann nur einmal verwendet werden.</p>
+      </div>
+      <p style="font-size:11px;color:#aaa;text-align:center;margin-top:20px;">Falls du diesen Link nicht angefordert hast, ignoriere diese E-Mail.</p>
+    </div>`;
+
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: "N-Capital <onboarding@resend.dev>",
+      to: [email],
+      subject: "Dein Login-Link fuer N-Capital",
+      html,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    console.error("Resend API error:", resp.status, errText);
+    throw new Error("E-Mail-Versand fehlgeschlagen");
+  }
+}
+
+// ─── Auth Route Handler (Magic Link Only) ───
+
 async function handleAuthRoutes(url, request, env) {
   const path = url.pathname;
 
-  if (request.method !== "POST" && !(request.method === "GET" && path === "/api/auth/me")) {
-    return jsonResponse({ error: "Method not allowed" }, 405);
-  }
-
-  // POST /api/auth/register
-  if (path === "/api/auth/register" && request.method === "POST") {
+  // POST /api/auth/magic-link — Request a magic link
+  if (path === "/api/auth/magic-link" && request.method === "POST") {
     let body;
     try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
-    const { username, password } = body;
-    if (!username || !password) return jsonResponse({ error: "Username und Passwort erforderlich" }, 400);
-    if (username.length < 3 || username.length > 60) return jsonResponse({ error: "Username: 3-60 Zeichen" }, 400);
-    if (password.length < 6) return jsonResponse({ error: "Passwort: mindestens 6 Zeichen" }, 400);
-    if (!/^[a-zA-Z0-9_@.\-]+$/.test(username)) return jsonResponse({ error: "Username: Buchstaben, Zahlen, -, _, @, ." }, 400);
+    const { email } = body;
+    if (!email || typeof email !== "string") return jsonResponse({ error: "E-Mail erforderlich" }, 400);
 
-    const existing = await env.NCAPITAL_KV.get(`user:${username.toLowerCase()}`);
-    if (existing) return jsonResponse({ error: "Username bereits vergeben" }, 409);
+    const emailLower = email.toLowerCase().trim();
 
-    const salt = base64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
-    const passwordHash = await hashPassword(password, salt);
-    await env.NCAPITAL_KV.put(`user:${username.toLowerCase()}`, JSON.stringify({ passwordHash, salt, createdAt: new Date().toISOString() }));
+    // Rate limit: max 1 request per 60s per email
+    const rateKey = `magic-rate:${emailLower}`;
+    const rateCheck = await env.NCAPITAL_KV.get(rateKey);
+    if (rateCheck) {
+      // Still respond with ok to prevent email enumeration
+      return jsonResponse({ ok: true, message: "Falls ein Konto mit dieser E-Mail existiert, wurde ein Login-Link gesendet." });
+    }
 
-    const token = await createJWT({ sub: username.toLowerCase(), iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7 * 86400 }, env.JWT_SECRET);
-    return jsonResponse({ ok: true, token, username: username.toLowerCase() });
+    // Set rate limit (60s TTL)
+    await env.NCAPITAL_KV.put(rateKey, "1", { expirationTtl: 60 });
+
+    // Lookup email index
+    const emailEntry = await env.NCAPITAL_KV.get(`email:${emailLower}`, "json");
+
+    if (emailEntry && emailEntry.username) {
+      // Generate token: 32 random bytes, hex-encoded
+      const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+      const token = Array.from(tokenBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+      // Store magic token in KV with 15 min TTL
+      await env.NCAPITAL_KV.put(`magic:${token}`, JSON.stringify({ username: emailEntry.username }), { expirationTtl: 900 });
+
+      // Send email
+      try {
+        await sendMagicLinkEmail(emailLower, token, env);
+      } catch (err) {
+        console.error("Magic link email failed:", err);
+        // Still respond ok to prevent enumeration, but log the error
+      }
+    }
+
+    // Always respond with same message (prevent email enumeration)
+    return jsonResponse({ ok: true, message: "Falls ein Konto mit dieser E-Mail existiert, wurde ein Login-Link gesendet." });
   }
 
-  // POST /api/auth/login
-  if (path === "/api/auth/login" && request.method === "POST") {
+  // POST /api/auth/verify-magic — Verify magic link token
+  if (path === "/api/auth/verify-magic" && request.method === "POST") {
     let body;
     try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
-    const { username, password } = body;
-    if (!username || !password) return jsonResponse({ error: "Username und Passwort erforderlich" }, 400);
+    const { token } = body;
+    if (!token || typeof token !== "string") return jsonResponse({ error: "Token erforderlich" }, 400);
 
-    const userData = await env.NCAPITAL_KV.get(`user:${username.toLowerCase()}`, "json");
-    if (!userData) return jsonResponse({ error: "Ungueltige Anmeldedaten" }, 401);
+    // Lookup magic token
+    const magicData = await env.NCAPITAL_KV.get(`magic:${token}`, "json");
+    if (!magicData || !magicData.username) {
+      return jsonResponse({ error: "Link ungueltig oder abgelaufen" }, 401);
+    }
 
-    const hash = await hashPassword(password, userData.salt);
-    if (hash !== userData.passwordHash) return jsonResponse({ error: "Ungueltige Anmeldedaten" }, 401);
+    // Delete token (one-time use)
+    await env.NCAPITAL_KV.delete(`magic:${token}`);
 
-    const token = await createJWT({ sub: username.toLowerCase(), iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7 * 86400 }, env.JWT_SECRET);
-    return jsonResponse({ ok: true, token, username: username.toLowerCase() });
+    // Verify user still exists
+    const userData = await env.NCAPITAL_KV.get(`user:${magicData.username}`, "json");
+    if (!userData) {
+      return jsonResponse({ error: "Benutzer nicht gefunden" }, 404);
+    }
+
+    // Create JWT
+    const jwt = await createJWT({
+      sub: magicData.username,
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 7 * 86400,
+    }, env.JWT_SECRET);
+
+    return jsonResponse({ ok: true, token: jwt, username: magicData.username });
   }
 
   // GET /api/auth/me
@@ -334,33 +404,6 @@ async function handleAuthRoutes(url, request, env) {
     const payload = await verifyJWT(authHeader.slice(7), env.JWT_SECRET);
     if (!payload) return jsonResponse({ error: "Token ungueltig oder abgelaufen" }, 401);
     return jsonResponse({ ok: true, username: payload.sub });
-  }
-
-  // POST /api/auth/change-password (requires valid JWT)
-  if (path === "/api/auth/change-password" && request.method === "POST") {
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return jsonResponse({ error: "Nicht eingeloggt" }, 401);
-    const payload = await verifyJWT(authHeader.slice(7), env.JWT_SECRET);
-    if (!payload) return jsonResponse({ error: "Token ungueltig oder abgelaufen" }, 401);
-
-    let body;
-    try { body = await request.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
-    const { currentPassword, newPassword } = body;
-    if (!currentPassword || !newPassword) return jsonResponse({ error: "Aktuelles und neues Passwort erforderlich" }, 400);
-    if (newPassword.length < 6) return jsonResponse({ error: "Neues Passwort: mindestens 6 Zeichen" }, 400);
-
-    const userData = await env.NCAPITAL_KV.get(`user:${payload.sub}`, "json");
-    if (!userData) return jsonResponse({ error: "Benutzer nicht gefunden" }, 404);
-
-    const currentHash = await hashPassword(currentPassword, userData.salt);
-    if (currentHash !== userData.passwordHash) return jsonResponse({ error: "Aktuelles Passwort ist falsch" }, 403);
-
-    const newSalt = base64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
-    const newHash = await hashPassword(newPassword, newSalt);
-    await env.NCAPITAL_KV.put(`user:${payload.sub}`, JSON.stringify({ ...userData, passwordHash: newHash, salt: newSalt, updatedAt: new Date().toISOString() }));
-
-    const token = await createJWT({ sub: payload.sub, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7 * 86400 }, env.JWT_SECRET);
-    return jsonResponse({ ok: true, message: "Passwort erfolgreich geaendert", token });
   }
 
   return null;

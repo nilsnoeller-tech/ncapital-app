@@ -1,5 +1,5 @@
 // ─── Auth Service ───
-// JWT-basierte Authentifizierung gegen den Cloudflare Worker.
+// Magic-Link-basierte Authentifizierung gegen den Cloudflare Worker.
 
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 const TOKEN_KEY = "ncapital-jwt";
@@ -39,41 +39,28 @@ export function isAuthenticated() {
   return getUser() !== null;
 }
 
-// ─── API Calls ───
+// ─── Magic Link API Calls ───
 
-export async function login(username, password) {
-  const resp = await fetch(`${PROXY_BASE}/api/auth/login`, {
+export async function requestMagicLink(email) {
+  const resp = await fetch(`${PROXY_BASE}/api/auth/magic-link`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email }),
   });
   const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || "Login fehlgeschlagen");
-  setToken(data.token);
+  if (!resp.ok) throw new Error(data.error || "Magic Link konnte nicht gesendet werden");
   return data;
 }
 
-export async function register(username, password) {
-  const resp = await fetch(`${PROXY_BASE}/api/auth/register`, {
+export async function verifyMagicToken(token) {
+  const resp = await fetch(`${PROXY_BASE}/api/auth/verify-magic`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ token }),
   });
   const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || "Registrierung fehlgeschlagen");
+  if (!resp.ok) throw new Error(data.error || "Token ungueltig oder abgelaufen");
   setToken(data.token);
-  return data;
-}
-
-export async function changePassword(currentPassword, newPassword) {
-  const resp = await authFetch(`${PROXY_BASE}/api/auth/change-password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ currentPassword, newPassword }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data.error || "Passwort-Aenderung fehlgeschlagen");
-  if (data.token) setToken(data.token);
   return data;
 }
 
