@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import ReactDOM from "react-dom";
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, EyeOff, Layers, Newspaper, LogOut, Settings as SettingsIcon, User, Edit3, Trash2, Save, Camera, Image as ImageIcon, Calendar } from "lucide-react";
 import Watchlist from "./components/Watchlist";
@@ -245,7 +246,7 @@ function computePortfolio(tradeList, startkapital) {
   const total = allForStats.length || 1;
   const gesamtGebuehren = closedTrades.reduce((s, t) => s + (t.totalGebuehren || 0), 0);
 
-  // Tier-basierte Performance (Composite Score Modell)
+  // Tier-basierte Performance (TA Score Modell)
   // Score 0-100 normalisiert aus Composite -11 bis +11: tier = ((composite + 11) / 22) * 100
   // HIGH_CONVICTION: composite >= 7.5 → normalized >= 84
   // STANDARD: composite >= 6.5 → normalized >= 80
@@ -303,28 +304,39 @@ const GlassCard = ({ children, style, onClick, onMouseEnter, onMouseLeave }) => 
 
 const StatCard = ({ icon: Icon, label, value, sub, color = C.accent, trend, tooltip }) => {
   const [showTip, setShowTip] = useState(false);
+  const cardRef = useRef(null);
+  const [tipPos, setTipPos] = useState({ top: 0, left: 0 });
+  const handleEnter = () => {
+    if (!tooltip || !cardRef.current) return;
+    const r = cardRef.current.getBoundingClientRect();
+    setTipPos({ top: r.bottom + 8, left: r.left + r.width / 2 });
+    setShowTip(true);
+  };
   return (
-    <GlassCard style={{ padding: 20, minWidth: 0, position: "relative" }}
-      onMouseEnter={() => tooltip && setShowTip(true)} onMouseLeave={() => setShowTip(false)}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-        <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}18`, border: `1px solid ${color}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Icon size={18} color={color} />
-        </div>
-        {trend !== undefined && (
-          <div style={{ display: "flex", alignItems: "center", gap: 3, color: trend >= 0 ? C.green : C.red, fontSize: 12, fontWeight: 600 }}>
-            {trend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(trend).toFixed(1)}%
+    <div ref={cardRef}>
+      <GlassCard style={{ padding: 20, minWidth: 0 }}
+        onMouseEnter={handleEnter} onMouseLeave={() => setShowTip(false)}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}18`, border: `1px solid ${color}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Icon size={18} color={color} />
           </div>
-        )}
-      </div>
-      <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 4, fontWeight: 500 }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{sub}</div>}
-      {showTip && tooltip && (
-        <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", padding: "10px 14px", borderRadius: 10, background: "rgba(15,18,25,0.97)", border: `1px solid ${C.border}`, backdropFilter: "blur(12px)", fontSize: 12, color: C.textMuted, whiteSpace: "pre-line", lineHeight: 1.6, zIndex: 50, minWidth: 220, maxWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", pointerEvents: "none" }}>
-          {tooltip}
+          {trend !== undefined && (
+            <div style={{ display: "flex", alignItems: "center", gap: 3, color: trend >= 0 ? C.green : C.red, fontSize: 12, fontWeight: 600 }}>
+              {trend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(trend).toFixed(1)}%
+            </div>
+          )}
         </div>
+        <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 4, fontWeight: 500 }}>{label}</div>
+        <div style={{ fontSize: 24, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{value}</div>
+        {sub && <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{sub}</div>}
+      </GlassCard>
+      {showTip && tooltip && ReactDOM.createPortal(
+        <div style={{ position: "fixed", top: tipPos.top, left: tipPos.left, transform: "translateX(-50%)", padding: "10px 14px", borderRadius: 10, background: "rgba(15,18,25,0.97)", border: `1px solid ${C.border}`, backdropFilter: "blur(12px)", fontSize: 12, color: C.textMuted, whiteSpace: "pre-line", lineHeight: 1.6, zIndex: 9999, minWidth: 220, maxWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", pointerEvents: "none" }}>
+          {tooltip}
+        </div>,
+        document.body
       )}
-    </GlassCard>
+    </div>
   );
 };
 
@@ -1424,7 +1436,7 @@ const Dashboard = ({ portfolio }) => {
           </ResponsiveContainer>
         </GlassCard>
         <GlassCard>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 14 }}>Composite Score Modell</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 14 }}>TA Score Modell</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 16 }}>
             {[
               { label: "Trend", max: 4.0, desc: "D×1.0 + W×0.7 + M×0.3", color: C.accent },
