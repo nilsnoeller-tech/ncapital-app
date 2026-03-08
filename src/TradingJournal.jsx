@@ -292,8 +292,8 @@ function useWindowWidth() {
 }
 
 // ─── Shared Components ───
-const GlassCard = ({ children, style, onClick }) => (
-  <div onClick={onClick} style={{
+const GlassCard = ({ children, style, onClick, onMouseEnter, onMouseLeave }) => (
+  <div onClick={onClick} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} style={{
     background: "linear-gradient(135deg, rgba(20,24,32,0.95), rgba(26,31,43,0.9))",
     border: `1px solid ${C.border}`, borderRadius: 16, padding: 24,
     backdropFilter: "blur(20px)", transition: "all 0.3s cubic-bezier(0.4,0,0.2,1)",
