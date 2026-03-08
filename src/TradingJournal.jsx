@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
-import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
+import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { TrendingUp, TrendingDown, DollarSign, Activity, Target, Shield, BarChart3, ArrowUpRight, ArrowDownRight, AlertTriangle, CheckCircle, XCircle, Zap, Bell, LayoutDashboard, BookOpen, Calculator, ChevronRight, ChevronLeft, ChevronDown, RotateCcw, ArrowRight, Hash, Crosshair, Menu, X, Plus, Info, Wifi, WifiOff, BarChart2, Eye, EyeOff, Layers, Newspaper, LogOut, Settings as SettingsIcon, User, Edit3, Trash2, Save, Camera, Image as ImageIcon, Calendar } from "lucide-react";
 import Watchlist from "./components/Watchlist";
 import Briefing from "./components/Briefing";
@@ -245,26 +245,30 @@ function computePortfolio(tradeList, startkapital) {
   const total = allForStats.length || 1;
   const gesamtGebuehren = closedTrades.reduce((s, t) => s + (t.totalGebuehren || 0), 0);
 
-  // Win-Rate und Ø R pro Ampel-Kategorie
-  const ampelStats = {};
-  for (const cat of ["GRÜN", "ORANGE", "ROT", "NICHT TRADEN", "MANUELL"]) {
-    const trades = allForStats.filter(t => t.ampel === cat);
+  // Tier-basierte Performance (Composite Score Modell)
+  // Score 0-100 normalisiert aus Composite -11 bis +11: tier = ((composite + 11) / 22) * 100
+  // HIGH_CONVICTION: composite >= 7.5 → normalized >= 84
+  // STANDARD: composite >= 6.5 → normalized >= 80
+  // MANUELL: score === 0 (kein Bot-Score)
+  const tierStats = {};
+  for (const [tier, filterFn] of [
+    ["HIGH_CONVICTION", t => t.score >= 84],
+    ["STANDARD", t => t.score >= 75 && t.score < 84],
+    ["LOW", t => t.score > 0 && t.score < 75],
+    ["MANUELL", t => !t.score || t.score === 0],
+  ]) {
+    const trades = allForStats.filter(filterFn);
     const catWins = trades.filter(t => t.pnl > 0).length;
     const catAvgR = trades.length > 0 ? trades.reduce((s, t) => s + t.rValue, 0) / trades.length : 0;
-    ampelStats[cat] = { count: trades.length, wins: catWins, winRate: trades.length > 0 ? (catWins / trades.length) * 100 : 0, avgR: catAvgR, pct: (trades.length / total) * 100 };
+    const catPnl = trades.reduce((s, t) => s + t.pnl, 0);
+    tierStats[tier] = { count: trades.length, wins: catWins, winRate: trades.length > 0 ? (catWins / trades.length) * 100 : 0, avgR: catAvgR, totalPnl: catPnl };
   }
 
   return {
     startkapital, kapital, realisiertGewinn, gesamtGebuehren, offenRisiko, roiPct,
     winRate, profitFaktor, avgR, tradesGesamt: closedTrades.length,
     equityPoints, monthlyPerf,
-    setupQuality: {
-      gruen: ampelStats["GRÜN"].pct,
-      orange: ampelStats["ORANGE"].pct,
-      rot: ampelStats["ROT"].pct,
-      nichtTraden: ampelStats["NICHT TRADEN"].pct,
-      ampelStats,
-    },
+    tierStats,
     closedTrades, openTrades,
   };
 }
@@ -297,23 +301,32 @@ const GlassCard = ({ children, style, onClick }) => (
   }}>{children}</div>
 );
 
-const StatCard = ({ icon: Icon, label, value, sub, color = C.accent, trend }) => (
-  <GlassCard style={{ padding: 20, minWidth: 0 }}>
-    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
-      <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}18`, border: `1px solid ${color}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <Icon size={18} color={color} />
+const StatCard = ({ icon: Icon, label, value, sub, color = C.accent, trend, tooltip }) => {
+  const [showTip, setShowTip] = useState(false);
+  return (
+    <GlassCard style={{ padding: 20, minWidth: 0, position: "relative" }}
+      onMouseEnter={() => tooltip && setShowTip(true)} onMouseLeave={() => setShowTip(false)}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 12, background: `${color}18`, border: `1px solid ${color}33`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Icon size={18} color={color} />
+        </div>
+        {trend !== undefined && (
+          <div style={{ display: "flex", alignItems: "center", gap: 3, color: trend >= 0 ? C.green : C.red, fontSize: 12, fontWeight: 600 }}>
+            {trend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(trend).toFixed(1)}%
+          </div>
+        )}
       </div>
-      {trend !== undefined && (
-        <div style={{ display: "flex", alignItems: "center", gap: 3, color: trend >= 0 ? C.green : C.red, fontSize: 12, fontWeight: 600 }}>
-          {trend >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(trend).toFixed(1)}%
+      <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 4, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{value}</div>
+      {sub && <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{sub}</div>}
+      {showTip && tooltip && (
+        <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)", padding: "10px 14px", borderRadius: 10, background: "rgba(15,18,25,0.97)", border: `1px solid ${C.border}`, backdropFilter: "blur(12px)", fontSize: 12, color: C.textMuted, whiteSpace: "pre-line", lineHeight: 1.6, zIndex: 50, minWidth: 220, maxWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.5)", pointerEvents: "none" }}>
+          {tooltip}
         </div>
       )}
-    </div>
-    <div style={{ fontSize: 13, color: C.textMuted, marginBottom: 4, fontWeight: 500 }}>{label}</div>
-    <div style={{ fontSize: 24, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{value}</div>
-    {sub && <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{sub}</div>}
-  </GlassCard>
-);
+    </GlassCard>
+  );
+};
 
 const Badge = ({ children, color = C.accent }) => (
   <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, color, background: `${color}15`, border: `1px solid ${color}30`, letterSpacing: "0.03em", textTransform: "uppercase" }}>{children}</span>
@@ -1375,15 +1388,23 @@ const Dashboard = ({ portfolio }) => {
   const ww = useWindowWidth();
   const isMobile = ww < 600;
   const isTablet = ww < 900;
+  const ts = P.tierStats || {};
+  const winsTotal = P.closedTrades?.filter(t => t.pnl > 0).length || 0;
+  const lossesTotal = (P.tradesGesamt || 0) - winsTotal;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : isTablet ? "1fr 1fr" : "repeat(5, 1fr)", gap: 16 }}>
-        <StatCard icon={DollarSign} label="Kapital" value={fmtEur(P.kapital)} sub={`Start: ${fmtEur(P.startkapital)}`} color={C.accent} trend={P.roiPct} />
-        <StatCard icon={TrendingUp} label="Realisiert" value={fmtEur(P.realisiertGewinn)} sub={P.gesamtGebuehren > 0 ? `Netto (${fmtEur(P.gesamtGebuehren)} Gebühren)` : "Geschlossene P&L"} color={P.realisiertGewinn >= 0 ? C.green : C.red} />
-        <StatCard icon={Activity} label="Win-Rate" value={`${P.winRate.toFixed(1)}%`} sub={`${P.tradesGesamt} Trades`} color={C.blue} />
-        <StatCard icon={Target} label="Profit-Faktor" value={fmt(P.profitFaktor, 1)} sub={`Ø ${fmt(P.avgR, 2)}R`} color={C.yellow} />
-        <StatCard icon={Shield} label="Offenes Risiko" value={fmtEur(P.offenRisiko)} sub={`${P.kapital > 0 ? ((P.offenRisiko / P.kapital) * 100).toFixed(1) : "0.0"}% vom Depot`} color={C.red} />
+        <StatCard icon={DollarSign} label="Kapital" value={fmtEur(P.kapital)} sub={`Start: ${fmtEur(P.startkapital)}`} color={C.accent} trend={P.roiPct}
+          tooltip={`Aktuelles Depot-Kapital nach allen\nrealisierten Gewinnen und Verlusten.\n\nStartkapital: ${fmtEur(P.startkapital)}\nAktuell: ${fmtEur(P.kapital)}\nDifferenz: ${P.kapital - P.startkapital >= 0 ? "+" : ""}${fmtEur(P.kapital - P.startkapital)}`} />
+        <StatCard icon={TrendingUp} label="Realisiert" value={fmtEur(P.realisiertGewinn)} sub={P.gesamtGebuehren > 0 ? `Netto (${fmtEur(P.gesamtGebuehren)} Gebühren)` : "Geschlossene P&L"} color={P.realisiertGewinn >= 0 ? C.green : C.red}
+          tooltip={`Summe aller geschlossenen Trades\n(Gewinn minus Verlust minus Gebühren).\n\nBrutto-P&L abzgl. ${fmtEur(P.gesamtGebuehren)} Gebühren\n= ${fmtEur(P.realisiertGewinn)} Netto`} />
+        <StatCard icon={Activity} label="Win-Rate" value={`${P.winRate.toFixed(1)}%`} sub={`${P.tradesGesamt} Trades`} color={C.blue}
+          tooltip={`Anteil gewonnener Trades an allen\nabgeschlossenen Trades.\n\n${winsTotal} Wins / ${lossesTotal} Losses\nvon ${P.tradesGesamt} Trades gesamt`} />
+        <StatCard icon={Target} label="Profit-Faktor" value={fmt(P.profitFaktor, 1)} sub={`Ø ${fmt(P.avgR, 2)}R`} color={C.yellow}
+          tooltip={`Verhältnis von durchschnittlichem\nGewinn zu durchschnittlichem Verlust.\n\nPF > 1.0 = profitabel\nPF > 2.0 = sehr gut\n\nØ R-Wert: ${fmt(P.avgR, 2)}R pro Trade`} />
+        <StatCard icon={Shield} label="Offenes Risiko" value={fmtEur(P.offenRisiko)} sub={`${P.kapital > 0 ? ((P.offenRisiko / P.kapital) * 100).toFixed(1) : "0.0"}% vom Depot`} color={C.red}
+          tooltip={`Maximaler Verlust aller offenen\nPositionen bis zum Stop-Loss.\n\nRegel: Max. 3-5% vom Depot.\nAktuell: ${P.kapital > 0 ? ((P.offenRisiko / P.kapital) * 100).toFixed(1) : "0.0"}% gebunden`} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr", gap: 20 }}>
         <GlassCard>
@@ -1403,41 +1424,55 @@ const Dashboard = ({ portfolio }) => {
           </ResponsiveContainer>
         </GlassCard>
         <GlassCard>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 16 }}>TA Score Analyse</div>
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <PieChart width={200} height={200}>
-              <Pie data={[
-                { name: "GRÜN", value: P.setupQuality.gruen },
-                { name: "ORANGE", value: P.setupQuality.orange },
-                { name: "ROT", value: P.setupQuality.rot },
-                { name: "NICHT TRADEN", value: P.setupQuality.nichtTraden },
-              ]} cx={100} cy={100} innerRadius={60} outerRadius={85} paddingAngle={4} dataKey="value" strokeWidth={0}>
-                <Cell fill={C.green} /><Cell fill={C.orange} /><Cell fill={C.red} /><Cell fill={C.noTrade} />
-              </Pie>
-            </PieChart>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 14 }}>Composite Score Modell</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: 16 }}>
             {[
-              { l: "Grün", key: "GRÜN", c: C.green },
-              { l: "Orange", key: "ORANGE", c: C.orange },
-              { l: "Rot", key: "ROT", c: C.red },
-              { l: "Manuell", key: "MANUELL", c: C.blue },
-            ].filter(s => (P.setupQuality.ampelStats?.[s.key]?.count || 0) > 0).map((s, i) => {
-              const st = P.setupQuality.ampelStats?.[s.key] || { count: 0, winRate: 0, avgR: 0 };
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 8, background: `${s.c}08`, border: `1px solid ${s.c}15` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: 4, background: s.c }} />
-                    <span style={{ fontSize: 12, color: C.text, fontWeight: 600 }}>{s.l}</span>
-                    <span style={{ fontSize: 11, color: C.textDim }}>({st.count})</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 12 }}>
-                    <span style={{ fontSize: 11, color: st.winRate >= 50 ? C.green : C.red, fontWeight: 700 }}>WR {st.winRate.toFixed(0)}%</span>
-                    <span style={{ fontSize: 11, color: st.avgR >= 0 ? C.green : C.red, fontWeight: 700 }}>{st.avgR >= 0 ? "+" : ""}{st.avgR.toFixed(1)}R</span>
-                  </div>
+              { label: "Trend", max: 4.0, desc: "D×1.0 + W×0.7 + M×0.3", color: C.accent },
+              { label: "RSI", max: 2.0, desc: "Divergenz + Penalty", color: C.blue },
+              { label: "MACD", max: 1.5, desc: "Graduiert + Crossover", color: C.yellow },
+              { label: "MA Align", max: 1.5, desc: "EMA20/SMA50/SMA200", color: C.green },
+              { label: "Breakout", max: 1.0, desc: "52W-Hoch + BB Squeeze", color: C.orange },
+              { label: "Volumen", max: 0.5, desc: "5d-Trend + OBV", color: C.textMuted },
+            ].map((comp, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 62, fontSize: 10, color: C.textDim, fontWeight: 600, textAlign: "right", flexShrink: 0 }}>{comp.label}</div>
+                <div style={{ flex: 1, height: 14, background: "rgba(10,13,17,0.5)", borderRadius: 7, overflow: "hidden", position: "relative" }}>
+                  <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${(comp.max / 4.0) * 100}%`, background: `${comp.color}40`, borderRadius: 7 }} />
+                  <div style={{ position: "absolute", right: 6, top: 0, height: "100%", display: "flex", alignItems: "center", fontSize: 9, color: comp.color, fontWeight: 700 }}>{"\u00B1"}{comp.max}</div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 2 }}>
+              <span style={{ fontSize: 10, color: C.textDim }}>Max: <strong style={{ color: C.accentLight }}>{"\u00B1"}10.5</strong></span>
+            </div>
+          </div>
+          <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.textMuted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>Tier-Performance</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {[
+                { label: "High Conviction", key: "HIGH_CONVICTION", desc: "Score \u2265 7.5", color: C.green },
+                { label: "Standard", key: "STANDARD", desc: "Score \u2265 6.5", color: C.accent },
+                { label: "Low Score", key: "LOW", desc: "Score < 6.5", color: C.orange },
+                { label: "Manuell", key: "MANUELL", desc: "Kein TA Score", color: C.textDim },
+              ].map((tier, i) => {
+                const st = ts[tier.key] || { count: 0, wins: 0, winRate: 0, avgR: 0, totalPnl: 0 };
+                if (st.count === 0) return null;
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 8px", borderRadius: 6, background: `${tier.color}08`, border: `1px solid ${tier.color}15` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: 3, background: tier.color }} />
+                      <span style={{ fontSize: 11, color: C.text, fontWeight: 600 }}>{tier.label}</span>
+                      <span style={{ fontSize: 10, color: C.textDim }}>({st.count})</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: C.textDim }}>{st.wins}W/{st.count - st.wins}L</span>
+                      <span style={{ fontSize: 11, color: st.winRate >= 50 ? C.green : C.red, fontWeight: 700 }}>{st.winRate.toFixed(0)}%</span>
+                      <span style={{ fontSize: 11, color: st.avgR >= 0 ? C.green : C.red, fontWeight: 700 }}>{st.avgR >= 0 ? "+" : ""}{st.avgR.toFixed(1)}R</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </GlassCard>
       </div>
