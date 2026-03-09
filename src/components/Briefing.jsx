@@ -219,9 +219,14 @@ export default function Briefing({ onNavigate }) {
           {/* ── Intermarket-Signale ── */}
           <IntermarketSection signals={briefing.intermarketSignals} isMobile={isMobile} />
 
+          {/* ── Market News ── */}
+          {briefing.news?.items?.length > 0 && (
+            <NewsSection news={briefing.news} isMobile={isMobile} />
+          )}
+
           {/* ── TA Scanner Picks (Composite Score LONG) ── */}
           {taPicks?.picks?.length > 0 && (
-            <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} />
+            <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} newsSentiment={briefing?.news?.symbolSentiment} />
           )}
 
           {/* ── ATR-based Daily Movers (>= 3x ATR) ── */}
@@ -472,11 +477,16 @@ function MacroItemsGrid({ items, vixHistory, isMobile }) {
               <TrendIcon change={item.change} />
             </div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-              <span style={{ color: priceColor, fontSize: isMobile ? 15 : 17, fontWeight: 700, fontFamily: "monospace" }}>
-                {item.price?.toLocaleString("de-DE", { maximumFractionDigits: item.price > 100 ? 0 : 2 })}
-              </span>
-              <ChangeDisplay change={item.change} style={{ fontSize: 12 }} />
+              {item.price > 0 ? (<>
+                <span style={{ color: priceColor, fontSize: isMobile ? 15 : 17, fontWeight: 700, fontFamily: "monospace" }}>
+                  {item.price?.toLocaleString("de-DE", { maximumFractionDigits: item.price > 100 ? 0 : 2 })}
+                </span>
+                <ChangeDisplay change={item.change} style={{ fontSize: 12 }} />
+              </>) : (
+                <span style={{ color: C.textDim, fontSize: 13 }}>Markt geschlossen</span>
+              )}
             </div>
+            {item.stale && <div style={{ fontSize: 9, color: C.yellow, marginTop: 2 }}>Letzte Daten</div>}
             {isVix && item.price > 0 && (
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                 <VixTooltip price={item.price} vixHistory={vixHistory} isMobile={isMobile} />
@@ -643,9 +653,93 @@ function TradeSetupsSection({ setups, isMobile, onNavigate }) {
   );
 }
 
+// ─── Market News Section ───
+
+function NewsSection({ news, isMobile }) {
+  if (!news?.items?.length) return null;
+
+  const sentArrow = (score) => {
+    if (score >= 3) return { icon: "\u2191\u2191", color: C.green };
+    if (score >= 1) return { icon: "\u2191", color: C.green };
+    if (score <= -3) return { icon: "\u2193\u2193", color: C.red };
+    if (score <= -1) return { icon: "\u2193", color: C.red };
+    return { icon: "\u2192", color: C.textDim };
+  };
+
+  const timeAgo = (ts) => {
+    if (!ts) return "";
+    const hours = Math.round((Date.now() / 1000 - ts) / 3600);
+    if (hours < 1) return "< 1h";
+    if (hours < 24) return `${hours}h`;
+    return `${Math.round(hours / 24)}d`;
+  };
+
+  return (
+    <GlassCard>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 18 }}>{"\uD83D\uDCF0"}</span>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>Market News</h3>
+        <span style={{ fontSize: 11, color: C.textDim, marginLeft: "auto" }}>
+          {news.items.length} Artikel
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {news.items.slice(0, isMobile ? 8 : 12).map((item, i) => {
+          const { icon, color } = sentArrow(item.sentimentScore);
+          return (
+            <a key={item.id || i} href={item.link || "#"} target="_blank" rel="noopener noreferrer"
+              style={{
+                display: "flex", alignItems: "flex-start", gap: 10, textDecoration: "none",
+                background: C.bg, borderRadius: 10, padding: "10px 14px",
+                border: `1px solid ${item.isScanner ? `${C.accent}40` : C.border}`,
+                transition: "border-color 0.15s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+              onMouseLeave={e => e.currentTarget.style.borderColor = item.isScanner ? `${C.accent}40` : C.border}
+            >
+              <span style={{ fontSize: 18, fontWeight: 700, color, minWidth: 24, textAlign: "center", lineHeight: "22px" }}>
+                {icon}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  color: C.text, fontSize: 13, fontWeight: 600, lineHeight: 1.3,
+                  overflow: "hidden", textOverflow: "ellipsis",
+                  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+                }}>
+                  {item.title}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, color: C.textDim }}>{item.publisher}</span>
+                  {item.relatedSymbols?.slice(0, 3).map(sym => (
+                    <span key={sym} style={{
+                      fontSize: 10, color: C.accent, background: `${C.accent}12`,
+                      borderRadius: 4, padding: "1px 5px", fontWeight: 600,
+                    }}>
+                      {sym}
+                    </span>
+                  ))}
+                  {item.isScanner && (
+                    <span style={{ fontSize: 9, color: C.green, background: `${C.green}12`, borderRadius: 4, padding: "1px 5px", fontWeight: 600 }}>
+                      Scanner
+                    </span>
+                  )}
+                </div>
+              </div>
+              <span style={{ fontSize: 11, color: C.textDim, whiteSpace: "nowrap", marginTop: 2 }}>
+                {timeAgo(item.publishedAt)}
+              </span>
+            </a>
+          );
+        })}
+      </div>
+    </GlassCard>
+  );
+}
+
 // ─── TA Picks Section (Composite Score LONG Candidates) ───
 
-function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
+function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
   const confColor = (c) => c === "STRONG BUY" ? C.green : c === "BUY" ? "#00D68F" : C.yellow;
 
@@ -714,6 +808,16 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate }) {
                   <span style={{ fontSize: 12, fontWeight: 700, color: C.textDim, background: `${C.accent}15`, borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
                   <span style={{ color: C.text, fontSize: 18, fontWeight: 700 }}>{r.displaySymbol}</span>
                   <span style={{ color: C.textDim, fontSize: 11 }}>{r.currency}</span>
+                  {(() => {
+                    const sym = (r.displaySymbol || "").toUpperCase();
+                    const sent = newsSentiment?.[sym];
+                    if (!sent) return null;
+                    const s = sent.score;
+                    const arrow = s >= 3 ? "\u2191\u2191" : s >= 1 ? "\u2191" : s <= -3 ? "\u2193\u2193" : s <= -1 ? "\u2193" : null;
+                    if (!arrow) return null;
+                    const clr = s > 0 ? C.green : C.red;
+                    return <span title={`News: ${sent.count} Artikel, Score ${sent.score}`} style={{ fontSize: 14, fontWeight: 700, color: clr }}>{arrow}</span>;
+                  })()}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 10px", borderRadius: 6 }}>
@@ -938,14 +1042,21 @@ function FuturesSection({ futures, isMobile }) {
           <div key={key} style={{ background: C.bg, borderRadius: 12, padding: 14, border: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ color: C.textMuted, fontSize: 11, fontWeight: 600 }}>{label}</div>
-              <div style={{ color: C.text, fontSize: 18, fontWeight: 700, fontFamily: "monospace", marginTop: 2 }}>
-                {data.price?.toLocaleString("de-DE", { maximumFractionDigits: 0 })}
-              </div>
+              {data.price > 0 ? (
+                <div style={{ color: C.text, fontSize: 18, fontWeight: 700, fontFamily: "monospace", marginTop: 2 }}>
+                  {data.price?.toLocaleString("de-DE", { maximumFractionDigits: 0 })}
+                </div>
+              ) : (
+                <div style={{ color: C.textDim, fontSize: 14, marginTop: 2 }}>Markt geschlossen</div>
+              )}
+              {data.stale && <div style={{ fontSize: 9, color: C.yellow }}>Letzte Daten</div>}
             </div>
+            {data.price > 0 && (
             <div style={{ textAlign: "right" }}>
               <ChangeDisplay change={data.change} style={{ fontSize: 15 }} />
               <div style={{ marginTop: 4 }}><TrendIcon change={data.change} /></div>
             </div>
+            )}
           </div>
         ))}
       </div>
