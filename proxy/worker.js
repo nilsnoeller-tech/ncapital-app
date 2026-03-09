@@ -450,6 +450,136 @@ async function fetchYahooJSON(symbol, params, timeoutMs = 12000, singleHost = fa
   return { error: lastError };
 }
 
+// ─── Yahoo Finance News Search ───
+
+async function fetchYahooSearch(query, newsCount = 10) {
+  const params = new URLSearchParams({ q: query, newsCount: String(newsCount), quotesCount: "0", enableFuzzyQuery: "false" });
+  const host = YAHOO_HOSTS[Math.random() < 0.5 ? 0 : 1];
+  try {
+    const url = `https://${host}/v1/finance/search?${params.toString()}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (resp.ok) {
+      const data = await resp.json();
+      const news = data.news || [];
+      console.log(`[News] Yahoo search "${query}": ${resp.status}, ${news.length} articles`);
+      return news;
+    }
+    console.log(`[News] Yahoo search "${query}": HTTP ${resp.status}`);
+    return [];
+  } catch (e) {
+    console.log(`[News] Search failed for "${query}": ${e.message}`);
+    return [];
+  }
+}
+
+function analyzeSentiment(title) {
+  if (!title) return { score: 0, label: "neutral" };
+  const lower = title.toLowerCase();
+  const bullish = ["surge","surges","soar","soars","rally","rallies","beats","beat","record high","all-time high",
+    "upgrade","upgrades","outperform","raises","raise","growth","strong","bullish","jumps","gains","breakout",
+    "rebound","recovery","expands","profit","boom","upbeat","tops","exceeded",
+    "steigt","kurssprung","rekord","uebertrifft","aufwaerts","kaufen","gewinnt","erholung","wachstum","hoch"];
+  const bearish = ["crash","crashes","plunge","plunges","tumble","tumbles","cuts","cut","downgrade","downgrades",
+    "warning","warns","sell","sells","decline","declines","falls","drop","drops","miss","misses","layoffs","layoff",
+    "recession","bearish","slump","losses","default","bankruptcy","fears","probe","fraud","crisis",
+    "faellt","absturz","warnung","senkt","abwaerts","verlust","verkaufen","krise","einbruch","rueckgang"];
+  let score = 0;
+  for (const w of bullish) if (lower.includes(w)) score++;
+  for (const w of bearish) if (lower.includes(w)) score--;
+  score = Math.max(-5, Math.min(5, score));
+  return { score, label: score >= 1 ? "bullish" : score <= -1 ? "bearish" : "neutral" };
+}
+
+async function fetchMarketNews(env, scannerPicks) {
+  // Check KV cache (2h TTL)
+  try {
+    const cached = await env.NCAPITAL_KV.get("news:latest", "json");
+    if (cached && cached._ts && (Date.now() - cached._ts) < 2 * 3600 * 1000) return cached;
+  } catch {}
+
+  // Known scanner/universe symbols for relevance matching
+  const allKnownSymbols = new Set([
+    ...Object.values(US_SECTORS).flat(),
+    ...Object.values(DAX_SECTORS).flat().map(s => s + ".DE"),
+  ]);
+
+  // Fetch general market news (2 subrequests)
+  const [usNews, euNews] = await Promise.all([
+    fetchYahooSearch("stock market earnings", 15),
+    fetchYahooSearch("DAX Aktien Boerse", 10),
+  ]);
+  console.log(`[News] Fetched US: ${usNews.length}, EU: ${euNews.length} articles`);
+
+  // Fetch news for top scanner picks (up to 5 subrequests)
+  const pickSymbols = (scannerPicks || []).slice(0, 5).map(p => p.displaySymbol || p.symbol?.replace(".DE", ""));
+  console.log(`[News] Scanner picks for news: ${pickSymbols.join(", ") || "none"}`);
+  const pickNewsArrays = await Promise.all(pickSymbols.map(sym => fetchYahooSearch(sym, 3)));
+
+  // Merge and deduplicate by UUID
+  const allRaw = [...usNews, ...euNews, ...pickNewsArrays.flat()];
+  const seen = new Set();
+  const deduped = allRaw.filter(n => {
+    const key = n.uuid || n.title;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  console.log(`[News] Total raw: ${allRaw.length}, deduped: ${deduped.length}`);
+
+  // Enrich with sentiment + importance
+  const now = Date.now();
+  const scannerSet = new Set(pickSymbols.map(s => s.toUpperCase()));
+  const items = deduped.map(n => {
+    const sentiment = analyzeSentiment(n.title);
+    const relatedSymbols = (n.relatedTickers || []).map(t => t.toUpperCase());
+    const isScanner = relatedSymbols.some(s => scannerSet.has(s));
+    const isUniverse = relatedSymbols.some(s => allKnownSymbols.has(s) || allKnownSymbols.has(s + ".DE"));
+    const ageHours = n.providerPublishTime ? (now / 1000 - n.providerPublishTime) / 3600 : 48;
+    const recencyScore = Math.max(0, 5 - ageHours * 0.2);
+    const symbolScore = isScanner ? 3 : isUniverse ? 2 : relatedSymbols.length > 0 ? 1 : 0;
+    const sourceWeight = /reuters|bloomberg|wsj|cnbc|handelsblatt/i.test(n.publisher || "") ? 2 : 1;
+    const importance = Math.round((recencyScore + symbolScore + sourceWeight + Math.abs(sentiment.score)) * 10) / 10;
+    return {
+      id: n.uuid || null, title: n.title, publisher: n.publisher || "Unknown",
+      publishedAt: n.providerPublishTime || null, link: n.link || null,
+      relatedSymbols, sentiment: sentiment.label, sentimentScore: sentiment.score,
+      importance, isScanner,
+    };
+  });
+
+  // Sort by importance, take top 20
+  items.sort((a, b) => b.importance - a.importance);
+  const topItems = items.slice(0, 20);
+
+  // Per-symbol sentiment aggregation
+  const symbolSentiment = {};
+  for (const item of items) {
+    for (const sym of item.relatedSymbols) {
+      if (!symbolSentiment[sym]) symbolSentiment[sym] = { total: 0, count: 0 };
+      symbolSentiment[sym].total += item.sentimentScore;
+      symbolSentiment[sym].count++;
+    }
+  }
+  const symbolSentimentLabeled = {};
+  for (const [sym, d] of Object.entries(symbolSentiment)) {
+    symbolSentimentLabeled[sym] = {
+      score: d.total, count: d.count,
+      label: d.total >= 2 ? "bullish" : d.total <= -2 ? "bearish" : d.total >= 1 ? "bullish" : d.total <= -1 ? "bearish" : "neutral",
+    };
+  }
+
+  const result = { items: topItems, symbolSentiment: symbolSentimentLabeled, generatedAt: new Date().toISOString(), _ts: Date.now() };
+  console.log(`[News] Final: ${result.items.length} items, ${Object.keys(result.symbolSentiment).length} symbols with sentiment`);
+  try { await env.NCAPITAL_KV.put("news:latest", JSON.stringify(result), { expirationTtl: 7200 }); } catch {}
+  return result;
+}
+
 function jsonResponse(data, status = 200, cacheSeconds = 300) {
   return new Response(JSON.stringify(data), {
     status,
@@ -3005,8 +3135,11 @@ function getCETHour() {
   return h + m / 60;
 }
 
-async function fetchMacroData() {
+async function fetchMacroData(env) {
   const results = {};
+  // Load cached last-good macro data from KV (fallback for weekends/holidays)
+  let cachedMacro = null;
+  try { cachedMacro = await env.NCAPITAL_KV.get("macro:latest", "json"); } catch {}
   const fetches = await Promise.all(
     ALL_MACRO_SYMBOLS.map(async (sym) => {
       const json = await fetchYahooJSON(sym, { range: "1y", interval: "1wk", includeAdjustedClose: "true" }, 10000, true);
@@ -3075,6 +3208,21 @@ async function fetchMacroData() {
       }
     }
     results[symbol] = { price, change, prevClose, high, low, currency, trend5d, w52, volumeData };
+  }
+  // Fallback: if price=0 for any symbol, use cached data
+  for (const sym of Object.keys(results)) {
+    if (results[sym].price === 0 && cachedMacro?.[sym]?.price > 0) {
+      results[sym] = { ...cachedMacro[sym], stale: true };
+      delete results[sym]._cachedAt;
+    }
+  }
+  // Cache symbols with valid prices (merge into existing cache, 7-day TTL)
+  const now = new Date().toISOString();
+  const validEntries = Object.entries(results).filter(([_, v]) => v.price > 0 && !v.stale);
+  if (validEntries.length > 0) {
+    const updatedCache = { ...(cachedMacro || {}) };
+    for (const [sym, data] of validEntries) updatedCache[sym] = { ...data, _cachedAt: now };
+    try { await env.NCAPITAL_KV.put("macro:latest", JSON.stringify(updatedCache), { expirationTtl: 604800 }); } catch {}
   }
   return results;
 }
@@ -3488,12 +3636,17 @@ function formatBriefingForTelegram(briefing) {
 async function generateBriefing(env, type) {
   const startTime = Date.now();
 
-  // 1. Fetch macro data (12 symbols) + VIX history in parallel
-  const [macro, vixHistory] = await Promise.all([fetchMacroData(), fetchVixHistory()]);
-
-  // 2. Read latest scan results (1 KV read)
-  const scanData = (await env.NCAPITAL_KV.get("scan:results", "json")) || {};
+  // 1. Fetch macro data + VIX history + scan results in parallel
+  const [macroResult, vixHistory, scanData] = await Promise.all([
+    fetchMacroData(env),
+    fetchVixHistory(),
+    env.NCAPITAL_KV.get("scan:results", "json").then(d => d || {}),
+  ]);
+  const macro = macroResult;
   const scanResults = scanData.hits || scanData || [];
+
+  // 2. Fetch market news (uses scanner picks for targeted queries)
+  const newsData = await fetchMarketNews(env, scanResults.slice(0, 10));
 
   // 3. Compute analyses
   const intermarketSignals = computeIntermarketSignals(macro);
@@ -3565,10 +3718,12 @@ async function generateBriefing(env, type) {
     tradeSetups,
     futures: { es: macro["ES=F"] || null, nq: macro["NQ=F"] || null },
     vixHistory: vixHistory || null,
+    news: newsData ? { items: newsData.items, symbolSentiment: newsData.symbolSentiment, generatedAt: newsData.generatedAt } : null,
+    dataAsOf: Object.values(macro).some(m => m.stale) ? (Object.values(macro).find(m => m._cachedAt)?._cachedAt || "cached") : new Date().toISOString(),
   };
 
-  // 7. Store in KV (TTL 12h)
-  await env.NCAPITAL_KV.put(`briefing:${type}`, JSON.stringify(briefing), { expirationTtl: 43200 });
+  // 7. Store in KV (TTL 3 days — covers weekends + holidays)
+  await env.NCAPITAL_KV.put(`briefing:${type}`, JSON.stringify(briefing), { expirationTtl: 259200 });
 
   console.log(`[Briefing] ${type} generated in ${briefing.generationMs}ms. ${scannerHits.length} hits, ${tradeSetups.length} setups.`);
   return briefing;
@@ -3610,6 +3765,21 @@ async function maybeSendBriefingTelegram(env) {
 
 // ─── Briefing Route Handlers ───
 
+function isBriefingStale(briefing, today) {
+  if (!briefing) return true;
+  const generatedDate = briefing.generatedAt?.slice(0, 10);
+  if (!generatedDate) return true;
+  // Force regeneration if briefing is missing expected fields (e.g. after feature deploys)
+  if (!briefing.news) return true;
+  // On weekends: if cached briefing has valid (non-zero) data, don't regenerate
+  const day = new Date().getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) {
+    const hasValidData = briefing.macroOverview?.some(g => g.items?.some(item => item.price > 0));
+    if (hasValidData) return false;
+  }
+  return generatedDate !== today;
+}
+
 async function handleBriefingRoutes(url, request, env) {
   const path = url.pathname;
 
@@ -3624,11 +3794,11 @@ async function handleBriefingRoutes(url, request, env) {
     ]);
 
     // Auto-generate morning if stale and after 07:30 CET
-    if ((!morning || morning.generatedAt?.slice(0, 10) !== today) && ceTime >= 7.5) {
+    if (isBriefingStale(morning, today) && ceTime >= 7.5) {
       morning = await generateBriefing(env, "morning");
     }
     // Auto-generate afternoon if stale and after 14:00 CET
-    if ((!afternoon || afternoon.generatedAt?.slice(0, 10) !== today) && ceTime >= 14) {
+    if (isBriefingStale(afternoon, today) && ceTime >= 14) {
       afternoon = await generateBriefing(env, "afternoon");
     }
 
