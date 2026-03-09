@@ -172,8 +172,9 @@ export async function fetchIndexData(currency) {
  */
 export function getFinvizChartUrl(symbol, size = "l") {
   // Finviz verwendet nur US-Ticker ohne Suffix
-  const cleanSymbol = symbol.replace(/\.(DE|F|PA|L|AS|MI|MC|BR|VI|HE|CO|ST|OL)$/i, "");
-  return `https://finviz.com/chart.ashx?t=${encodeURIComponent(cleanSymbol.toUpperCase())}&ty=c&ta=1&p=d&s=${size}`;
+  const cleanSymbol = symbol.replace(/\.(DE|F|PA|L|AS|MI|MC|BR|VI|HE|CO|ST|OL)$/i, "").toUpperCase();
+  // Direct URL (bypass 302 redirect from finviz.com)
+  return `https://charts2-node.finviz.com/chart.ashx?cs=${size}&t=${encodeURIComponent(cleanSymbol)}&tf=d&s=linear&ct=candle_stick&o[0][ot]=sma&o[0][op]=20&o[0][oc]=FF8F33C6&o[1][ot]=sma&o[1][op]=50&o[1][oc]=DCB3326D&o[2][ot]=sma&o[2][op]=200&o[2][oc]=DC32B363&o[3][ot]=patterns&o[3][op]=&o[3][oc]=000`;
 }
 
 /**

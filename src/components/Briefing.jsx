@@ -4,6 +4,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Sun, Moon, TrendingUp, TrendingDown, Minus, AlertTriangle, BarChart3, Target, Clock } from "lucide-react";
 import { authFetch } from "../services/auth.js";
+import { getFinvizChartUrl, isFinvizAvailable } from "../services/marketData.js";
 
 const PROXY_BASE = "https://ncapital-market-proxy.nils-noeller.workers.dev";
 
@@ -66,7 +67,7 @@ function TrendIcon({ change }) {
 
 // ─── Main Briefing Component ───
 
-export default function Briefing({ onNavigate }) {
+export default function Briefing({ onNavigate, portfolio }) {
   const [data, setData] = useState(null);
   const [taPicks, setTaPicks] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -226,7 +227,7 @@ export default function Briefing({ onNavigate }) {
 
           {/* ── TA Scanner Picks (Composite Score LONG) ── */}
           {taPicks?.picks?.length > 0 && (
-            <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} newsSentiment={briefing?.news?.symbolSentiment} />
+            <TAPicksSection picks={taPicks.picks} stats={taPicks.stats} isMobile={isMobile} onNavigate={onNavigate} newsSentiment={briefing?.news?.symbolSentiment} portfolio={portfolio} />
           )}
 
           {/* ── ATR-based Daily Movers (>= 3x ATR) ── */}
@@ -803,31 +804,80 @@ function NewsSection({ news, isMobile }) {
 
 // ─── TA Picks Section (Composite Score LONG Candidates) ───
 
-function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
+function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment, portfolio }) {
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
+  const fmtEur = (v) => new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(v);
   const confColor = (c) => c === "STRONG BUY" ? C.green : c === "BUY" ? "#00D68F" : C.yellow;
 
   const regime = stats?.marketRegime;
-  const sp500Bull = regime?.sp500 === "bullish";
-  const daxBull = regime?.dax === "bullish";
+  const rp = stats?.regimeParams;
+  const bullishRegimes = ["STRONG_BULL", "MODERATE_BULL", "bullish"];
+  const sp500Bull = bullishRegimes.includes(regime?.sp500);
+  const daxBull = bullishRegimes.includes(regime?.dax);
+
+  // Portfolio-aware position sizing (nur wenn Startkapital explizit in Einstellungen gesetzt)
+  const hasPortfolio = portfolio && portfolio.kapital > 0 && portfolio.startkapitalExplicit;
+  const verfuegbaresKapital = hasPortfolio ? portfolio.kapital : null;
+  const offenePositionen = hasPortfolio ? (portfolio.openTrades?.length || 0) : 0;
+  const offenRisiko = hasPortfolio ? (portfolio.offenRisiko || 0) : 0;
+  const RISK_PCT = 0.01;
+  const MAX_POS_PCT = 0.25;
+
+  // Recalculate shares + portfolioPct per pick (null wenn kein Portfolio)
+  const recalcPosition = (tp) => {
+    if (!tp || !verfuegbaresKapital) return null;
+    const risk = tp.entry - tp.stop;
+    const maxRisk = verfuegbaresKapital * RISK_PCT;
+    const maxPosValue = verfuegbaresKapital * MAX_POS_PCT;
+    let shares = risk > 0 ? Math.floor(maxRisk / risk) : 0;
+    let positionValue = Math.round(shares * tp.entry);
+    if (positionValue > maxPosValue) {
+      shares = Math.floor(maxPosValue / tp.entry);
+      positionValue = Math.round(shares * tp.entry);
+    }
+    const portfolioPct = verfuegbaresKapital > 0 ? Math.round((positionValue / verfuegbaresKapital) * 1000) / 10 : 0;
+    return { shares, positionValue, portfolioPct };
+  };
+
+  // Tier counts for summary
+  const tierCounts = { CONSENSUS: 0, BASE_ONLY: 0, ENHANCED_ONLY: 0 };
+  for (const p of picks) tierCounts[p.tier] = (tierCounts[p.tier] || 0) + 1;
+
+  const tierMeta = {
+    CONSENSUS: { emoji: "\u2B50", label: "Consensus", color: "#f59e0b", desc: "Base + Enhanced" },
+    BASE_ONLY: { emoji: "\uD83D\uDCCA", label: "Base", color: C.accent, desc: "Nur Base-Score" },
+    ENHANCED_ONLY: { emoji: "\uD83D\uDCC8", label: "Enhanced", color: C.green, desc: "Nur Enhanced-Score" },
+  };
 
   return (
     <GlassCard>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ fontSize: 18 }}>{"\uD83D\uDCCA"}</span>
-        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: Optimierte Picks</h3>
+        <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: Dual-Tier Picks</h3>
+      </div>
+
+      {/* Tier Legend */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        {Object.entries(tierMeta).map(([tier, meta]) => (
+          <span key={tier} style={{
+            fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+            color: meta.color, background: `${meta.color}12`, border: `1px solid ${meta.color}25`,
+          }}>
+            {meta.emoji} {meta.label} ({tierCounts[tier] || 0}) <span style={{ fontWeight: 400, opacity: 0.7 }}>{meta.desc}</span>
+          </span>
+        ))}
       </div>
 
       {/* Market Regime Status */}
       {regime && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
           <span style={{
             fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
             color: sp500Bull ? C.green : C.red,
             background: `${sp500Bull ? C.green : C.red}12`,
             border: `1px solid ${sp500Bull ? C.green : C.red}25`,
           }}>
-            S&P 500 {sp500Bull ? "\u2713 über" : "\u2717 unter"} SMA200
+            S&P 500 {sp500Bull ? "\u2713 \u00fcber" : "\u2717 unter"} SMA200
           </span>
           <span style={{
             fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
@@ -835,14 +885,29 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
             background: `${daxBull ? C.green : C.red}12`,
             border: `1px solid ${daxBull ? C.green : C.red}25`,
           }}>
-            DAX {daxBull ? "\u2713 über" : "\u2717 unter"} SMA200
+            DAX {daxBull ? "\u2713 \u00fcber" : "\u2717 unter"} SMA200
           </span>
+          {rp?.effective && (
+            <span style={{
+              fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+              color: C.accent, background: `${C.accent}12`, border: `1px solid ${C.accent}25`,
+            }}>
+              Regime: {rp.effective.replace(/_/g, " ")}
+            </span>
+          )}
         </div>
       )}
 
-      {/* Filter Summary */}
+      {/* Filter Summary — dynamic from regime params */}
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
-        {["Score \u2265 7.5", "RS 0\u201315%", "EMA20 < 2 ATR", "Index > SMA200", "Max 2/Sektor"].map((f) => (
+        {[
+          `Score \u2265 ${rp?.scoreThreshold || "6.3"}`,
+          `RS 0\u2013${rp?.rsMax || 22}%`,
+          `EMA20 < ${rp?.ema20Max || 2.8} ATR`,
+          "RSI < 75",
+          "SMA200 (Bypass m\u00f6gl.)",
+          `Max ${rp?.sectorMax || 4}/Sektor`,
+        ].map((f) => (
           <span key={f} style={{
             fontSize: 9, color: C.accent, background: `${C.accent}10`, borderRadius: 4, padding: "1px 5px",
             border: `1px solid ${C.accent}20`,
@@ -850,28 +915,75 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
         ))}
       </div>
 
-      <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 14 }}>
-        Backtest-optimiert (PF 1.56 {"\u2022"} WR 57% {"\u2022"} MaxDD -4.5%) {"\u2022"} Depot EUR 45k
+      <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 8 }}>
+        AKTUELL+ Hold30 (PF 1.38 {"\u2022"} CAGR 11.1% {"\u2022"} 1211 Trades/10J) {"\u2022"} 1% Risiko {"\u2022"} 25% Max-Position {"\u2022"} Max 30 Tage
         {stats && <span> {"\u2022"} {stats.totalScanned} gescannt, {stats.unfilteredPicks || stats.longPicks} unfiltered {"\u2192"} {stats.longPicks} Picks</span>}
       </div>
 
+      {/* Portfolio Info */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {hasPortfolio ? (
+          <>
+            <span style={{
+              fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+              color: C.text, background: `${C.accent}12`, border: `1px solid ${C.accent}20`,
+            }}>
+              {"\uD83D\uDCB0"} Depot: {fmtEur(verfuegbaresKapital)}
+            </span>
+            {offenePositionen > 0 && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+                color: C.yellow, background: `${C.yellow}12`, border: `1px solid ${C.yellow}25`,
+              }}>
+                {"\uD83D\uDCC2"} {offenePositionen} offene Position{offenePositionen !== 1 ? "en" : ""}
+              </span>
+            )}
+            {offenRisiko > 0 && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+                color: C.red, background: `${C.red}12`, border: `1px solid ${C.red}25`,
+              }}>
+                {"\u26A0\uFE0F"} Gebundenes Risiko: {fmtEur(offenRisiko)}
+              </span>
+            )}
+          </>
+        ) : (
+          <span onClick={() => onNavigate && onNavigate("settings")} style={{
+            fontSize: 10, fontWeight: 500, color: C.yellow, cursor: "pointer",
+            background: `${C.yellow}12`, borderRadius: 5, padding: "2px 8px",
+            border: `1px solid ${C.yellow}25`,
+          }}>
+            {"\u2699\uFE0F"} Startkapital in Einstellungen setzen f\u00fcr Positionsgr\u00f6\u00dfe & St\u00fcckzahl
+          </span>
+        )}
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
-        {picks.slice(0, 10).map((r, i) => {
+        {picks.slice(0, 12).map((r, i) => {
           const c = r.composite;
           const tp = c?.tradePlan;
           if (!c || !tp) return null;
 
           const range = tp.target - tp.stop;
           const entryPos = range > 0 ? ((tp.entry - tp.stop) / range) * 100 : 50;
+          const dyn = recalcPosition(tp);
+          const tm = tierMeta[r.tier] || tierMeta.BASE_ONLY;
+          const borderColor = r.tier === "CONSENSUS" ? `${tm.color}50` : C.border;
 
           return (
-            <div key={i} style={{ background: C.bg, borderRadius: 14, padding: 16, border: `1px solid ${C.border}` }}>
-              {/* Header: Rank + Symbol + Score + Confidence */}
+            <div key={i} style={{ background: C.bg, borderRadius: 14, padding: 16, border: `1px solid ${borderColor}` }}>
+              {/* Header: Tier Badge + Symbol + Scores */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: C.textDim, background: `${C.accent}15`, borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span title={`${tm.label}: ${tm.desc}`} style={{ fontSize: 14 }}>{tm.emoji}</span>
                   <span style={{ color: C.text, fontSize: 18, fontWeight: 700 }}>{r.displaySymbol}</span>
                   <span style={{ color: C.textDim, fontSize: 11 }}>{r.currency}</span>
+                  {r.bypassedSMA200 && (
+                    <span title="Individuelle St\u00e4rke: Aktie \u00fcber eigener SMA200 trotz schwachem Index" style={{
+                      fontSize: 9, fontWeight: 600, color: C.yellow, background: `${C.yellow}15`,
+                      borderRadius: 4, padding: "1px 5px", border: `1px solid ${C.yellow}30`,
+                    }}>SMA200 Bypass</span>
+                  )}
                   {(() => {
                     const sym = (r.displaySymbol || "").toUpperCase();
                     const sent = newsSentiment?.[sym];
@@ -883,11 +995,16 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
                     return <span title={`News: ${sent.count} Artikel, Score ${sent.score}`} style={{ fontSize: 14, fontWeight: 700, color: clr }}>{arrow}</span>;
                   })()}
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 10px", borderRadius: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span title="Base Score" style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 8px", borderRadius: 6 }}>
                     {c.compositeScore}
                   </span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: confColor(c.confidence) }}>{c.confidence}</span>
+                  {r.enhancedScore != null && r.enhancedScore !== c.compositeScore && (
+                    <span title={`Enhanced Score (${Object.entries(r.enhancedBonus || {}).filter(([,v]) => v !== 0).map(([k,v]) => `${k}: ${v > 0 ? "+" : ""}${v}`).join(", ")})`}
+                      style={{ fontSize: 12, fontWeight: 600, color: r.enhancedScore > c.compositeScore ? C.green : C.red, background: `${r.enhancedScore > c.compositeScore ? C.green : C.red}12`, padding: "2px 6px", borderRadius: 5 }}>
+                      E:{r.enhancedScore}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -897,20 +1014,44 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
                 <ChangeDisplay change={r.change} />
               </div>
 
-              {/* Score Breakdown */}
+              {/* Finviz Mini-Chart (US-Aktien: Daily mit SMA + Patterns) */}
+              {isFinvizAvailable(r.symbol) && (
+                <div style={{ marginBottom: 10, borderRadius: 8, overflow: "hidden", border: `1px solid ${C.border}` }}>
+                  <img
+                    src={getFinvizChartUrl(r.displaySymbol || r.symbol, "l")}
+                    alt={`${r.displaySymbol} Chart`}
+                    style={{ width: "100%", display: "block" }}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => { e.target.parentElement.style.display = "none"; }}
+                  />
+                </div>
+              )}
+
+              {/* Score Breakdown — Base + Enhanced */}
               {c.breakdown && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 10 }}>
                 {[
-                  { label: "Trend", val: c.breakdown.trend, max: 6 },
-                  { label: "RSI", val: c.breakdown.rsi, max: 1.5 },
-                  { label: "MACD", val: c.breakdown.macd, max: 1 },
-                  { label: "MA", val: c.breakdown.ma, max: 2 },
-                  { label: "Vol", val: c.breakdown.volume, max: 1 },
-                ].map(({ label, val, max }) => {
+                  { label: "Trend", val: c.breakdown.trend },
+                  { label: "RSI", val: c.breakdown.rsi },
+                  { label: "MACD", val: c.breakdown.macd },
+                  { label: "MA", val: c.breakdown.ma },
+                  { label: "Vol", val: c.breakdown.volume },
+                ].map(({ label, val }) => {
                   const color = val > 0 ? C.green : val < 0 ? C.red : C.textDim;
                   return (
                     <span key={label} style={{ fontSize: 10, color, background: `${color}12`, borderRadius: 5, padding: "2px 6px", border: `1px solid ${color}20` }}>
                       {label} {val > 0 ? "+" : ""}{val}
+                    </span>
+                  );
+                })}
+                {/* Enhanced bonus components */}
+                {r.enhancedBonus && Object.entries(r.enhancedBonus).filter(([,v]) => v !== 0).map(([key, val]) => {
+                  const labels = { stoch: "StochRSI", structure: "Struktur", pullback: "Pullback", buyer: "Buyer", dist: "Distrib" };
+                  const color = val > 0 ? "#22d3ee" : C.red;
+                  return (
+                    <span key={key} style={{ fontSize: 10, color, background: `${color}12`, borderRadius: 5, padding: "2px 6px", border: `1px solid ${color}20` }}>
+                      {labels[key] || key} {val > 0 ? "+" : ""}{val}
                     </span>
                   );
                 })}
@@ -934,8 +1075,14 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
               {/* Trade Stats */}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.textMuted }}>
                 <span>R:R <b style={{ color: tp.rr >= 2 ? C.green : C.yellow }}>{tp.rr}</b></span>
-                <span>{tp.shares} Stk.</span>
-                <span>{tp.portfolioPct}% Depot</span>
+                {dyn ? (
+                  <>
+                    <span>{dyn.shares} Stk.</span>
+                    <span>{dyn.portfolioPct}% Depot</span>
+                  </>
+                ) : (
+                  <span style={{ color: C.textDim, fontStyle: "italic", fontSize: 10 }}>Depot in Einstellungen setzen</span>
+                )}
                 <span>ATR {fmtP(tp.atr)}</span>
               </div>
 
@@ -980,6 +1127,18 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment }) {
                     </span>
                   );
                 })}
+              </div>
+              )}
+
+              {/* Max Haltedauer */}
+              {tp.maxHoldDays && (
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 500, color: C.textDim,
+                  background: `${C.textDim}10`, borderRadius: 5, padding: "2px 6px",
+                }}>
+                  {"\u23F1"} Max {tp.maxHoldDays}d
+                </span>
               </div>
               )}
             </div>

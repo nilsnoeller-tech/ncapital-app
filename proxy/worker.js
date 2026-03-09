@@ -1860,7 +1860,8 @@ function detectMarketRegime(indexCloses, sma200val, vixPrice) {
 }
 
 const REGIME_PARAMS = {
-  STRONG_BULL:   { scoreThreshold: 6.0, maxPositions: 8, riskPct: 1.2, stopATR: 1.5, rsMax: 25, ema20Max: 3.0, sectorMax: 4 },
+  // AKTUELL+ variant: backtested 10J CAGR 9.4%, PF 1.32, 1211 trades
+  STRONG_BULL:   { scoreThreshold: 6.3, maxPositions: 7, riskPct: 1.2, stopATR: 1.5, rsMax: 22, ema20Max: 2.8, sectorMax: 4 },
   MODERATE_BULL: { scoreThreshold: 6.5, maxPositions: 5, riskPct: 1.0, stopATR: 1.5, rsMax: 20, ema20Max: 2.5, sectorMax: 3 },
   TRANSITION:    { scoreThreshold: 7.0, maxPositions: 3, riskPct: 0.7, stopATR: 1.2, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
   MODERATE_BEAR: { scoreThreshold: 5.5, maxPositions: 3, riskPct: 0.5, stopATR: 1.0, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
@@ -2008,6 +2009,28 @@ function computeCompositeScore(candles) {
   // ── COMPOSITE SCORE ──
   const compositeScore = Math.round((trendScore + rsiScore + macdScore + maScore + volumeScore + breakoutScore) * 10) / 10;
 
+  // ── ENHANCED SCORE (adds quality signals for dual-tier picks) ──
+  let stochBonus = 0;
+  if (ind.stochOversold && trendScore > 0) stochBonus = 0.5;
+  else if (ind.stochBullish && trendScore > 0) stochBonus = 0.3;
+
+  let structureBonus = 0;
+  if (ind.hhhl && ind.higherLow) structureBonus = 0.5;
+  else if (ind.higherLow) structureBonus = 0.3;
+
+  let pullbackBonus = 0;
+  if (ind.pullbackVolDeclining && trendScore > 0) pullbackBonus += 0.2;
+  if (ind.confluence >= 2) pullbackBonus += 0.1;
+
+  let buyerBonus = ind.closeNearDayHigh ? 0.2 : 0;
+
+  let distPenalty = 0;
+  if (ind.distributionPattern || ind.heavySelling) distPenalty = -0.5;
+  else if (ind.sellingPressure) distPenalty = -0.3;
+
+  const enhancedBonus = stochBonus + structureBonus + pullbackBonus + buyerBonus + distPenalty;
+  const enhancedScore = Math.round((compositeScore + enhancedBonus) * 10) / 10;
+
   // ── CONFIDENCE RATING ──
   let confidence;
   if (compositeScore >= 5) confidence = "STRONG BUY";
@@ -2148,34 +2171,37 @@ function computeCompositeScore(candles) {
     const reward = target - entry;
     const rr = risk > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
 
-    // Position sizing: EUR 45,000 portfolio, EUR 450 max risk (1%), cap at 100% depot
-    const shares = risk > 0 ? Math.floor(450 / risk) : 0;
+    // Position sizing: dynamic 1% risk, 25% max position cap
+    const PORTFOLIO = 45000;
+    const RISK_PCT = 0.01;
+    const MAX_POS_PCT = 0.25;
+    const maxRisk = PORTFOLIO * RISK_PCT; // 450
+    const maxPosValue = PORTFOLIO * MAX_POS_PCT; // 11,250
+    let shares = risk > 0 ? Math.floor(maxRisk / risk) : 0;
     let positionValue = Math.round(shares * entry);
-    let cappedShares = shares;
-    if (positionValue > 45000) {
-      cappedShares = Math.floor(45000 / entry);
-      positionValue = Math.round(cappedShares * entry);
+    // Cap at 25% of portfolio — reduce shares, don't reject
+    if (positionValue > maxPosValue) {
+      shares = Math.floor(maxPosValue / entry);
+      positionValue = Math.round(shares * entry);
     }
-    const portfolioPct = Math.round((positionValue / 45000) * 1000) / 10;
+    const portfolioPct = Math.round((positionValue / PORTFOLIO) * 1000) / 10;
 
     // Partial profit at 1R
     const partialTarget = Math.round((entry + (entry - stop)) * 100) / 100;
 
     // Kelly-based position sizing (Half-Kelly, conservative)
-    // Kelly fraction = (WR * avgWin - (1-WR) * avgLoss) / avgWin
-    // Using backtested estimates: WR ~55%, avg win = 2R, avg loss = 1R
-    // Kelly = (0.55 * 2 - 0.45 * 1) / 2 = 0.325 → Half-Kelly = 16.25%
     const kellyFraction = 0.1625;
-    const kellyRiskPerTrade = Math.min(45000 * kellyFraction * 0.01 * rr, 900); // max EUR 900
+    const kellyRiskPerTrade = Math.min(PORTFOLIO * kellyFraction * 0.01 * rr, 900);
     const kellyShares = risk > 0 ? Math.floor(kellyRiskPerTrade / risk) : 0;
 
     tradePlan = {
       entry, stop, target, entryMode,
       risk: Math.round(risk * 100) / 100,
       reward: Math.round(reward * 100) / 100,
-      rr, shares: cappedShares, positionValue, portfolioPct,
+      rr, shares, positionValue, portfolioPct,
       atr: Math.round(atr * 100) / 100,
       partialTarget, partialPct: 50, trailingStopATR: 1.5,
+      maxHoldDays: 30,
       kellySizing: { shares: kellyShares, riskPerTrade: Math.round(kellyRiskPerTrade * 100) / 100 },
     };
   }
@@ -2185,10 +2211,13 @@ function computeCompositeScore(candles) {
   const pocVal = calcPOC(candles, 50, 50);
 
   return {
-    compositeScore, confidence, direction, tradePlan,
+    compositeScore, enhancedScore, confidence, direction, tradePlan,
     breakdown: {
       trend: Math.round(trendScore * 10) / 10,
       rsi: rsiScore, macd: macdScore, ma: maScore, volume: volumeScore, breakout: breakoutScore,
+    },
+    enhancedBreakdown: {
+      stoch: stochBonus, structure: structureBonus, pullback: pullbackBonus, buyer: buyerBonus, dist: distPenalty,
     },
     indicators: {
       rsi: Math.round(ind.rsi * 10) / 10,
@@ -2644,51 +2673,73 @@ async function processAndNotify(env, config, allResults) {
     return { total: arr.length, positive: pos, negative: neg, unchanged: unch, avgChange: Math.round(avgChg * 100) / 100 };
   };
 
-  // ── Composite TA Picks: LONG with regime-dependent filters ──
-  // Score threshold: 6.5 (down from 7.5), with tier system
-  // Filters: R:R >= 1.4, RS 0–20%, EMA20 < regime.ema20Max ATR, ADX > 20, Market Regime
+  // ── Composite TA Picks: Dual-Tier System (Base + Enhanced) ──
+  // Base: compositeScore >= threshold | Enhanced: enhancedScore >= threshold
+  // Consensus (⭐) = both | Base-only (📊) = base not enhanced | Enhanced-only (📈) = enhanced not base
   const scoreThreshold = regimeParams.scoreThreshold;
+
+  // Pre-filter: LONG direction, minimum score (either base or enhanced >= 6.5), R:R >= 1.4
   const unfilteredPicks = allResults
-    .filter((r) => r.composite && r.composite.direction === "LONG" && r.composite.compositeScore >= 6.5 && r.composite.tradePlan && r.composite.tradePlan.rr >= 1.4);
-  const taPicksFiltered = unfilteredPicks
+    .filter((r) => r.composite && r.composite.direction === "LONG" &&
+      (r.composite.compositeScore >= 6.5 || r.composite.enhancedScore >= 6.5) &&
+      r.composite.tradePlan && r.composite.tradePlan.rr >= 1.4);
+
+  // Apply common filters (SMA200, RS, EMA20, ADX, RSI) — score threshold applied per-tier below
+  const commonFiltered = unfilteredPicks
     .filter((r) => {
-      // Market Regime: skip if benchmark index below SMA200 (with hysteresis)
+      // Market Regime: soft SMA200 filter with individual strength bypass
       const isDE = r.symbol.endsWith(".DE");
-      if (isDE && !gdaxiAboveSMA200) return false;
-      if (!isDE && !gspcAboveSMA200) return false;
-      // Relative Strength 0–20% (expanded from 15%)
+      const indexAboveSMA200 = isDE ? gdaxiAboveSMA200 : gspcAboveSMA200;
+      if (!indexAboveSMA200) {
+        const stockSMA200 = r.composite?.indicators?.sma200;
+        const stockAboveOwnSMA200 = stockSMA200 ? r.price > stockSMA200 : false;
+        const hasPositiveRS = r.relStrengthVsIndex != null && r.relStrengthVsIndex > 0;
+        const hasStrongTrend = r.composite?.indicators?.adx != null && r.composite.indicators.adx >= 25;
+        const bestScore = Math.max(r.composite.compositeScore, r.composite.enhancedScore);
+        const hasHighScore = bestScore >= scoreThreshold + 1.0;
+        if (!(stockAboveOwnSMA200 && hasPositiveRS && hasStrongTrend && hasHighScore)) return false;
+        r._bypassedSMA200 = true;
+      }
       if (r.relStrengthVsIndex != null && (r.relStrengthVsIndex <= 0 || r.relStrengthVsIndex > regimeParams.rsMax)) return false;
-      // EMA20 distance < regime ema20Max ATR (not overextended)
       if (r.ema20Distance != null && Math.abs(r.ema20Distance) > regimeParams.ema20Max) return false;
-      // ADX > 20 (minimum trend strength for trend-following picks)
       if (r.composite?.indicators?.adx != null && r.composite.indicators.adx < 20) return false;
-      // Regime-dependent score threshold
-      if (r.composite.compositeScore < scoreThreshold) return false;
+      if (r.composite?.indicators?.rsi != null && r.composite.indicators.rsi >= 75) return false;
+      // Must pass at least ONE score threshold (base OR enhanced)
+      const passesBase = r.composite.compositeScore >= scoreThreshold;
+      const passesEnhanced = r.composite.enhancedScore >= scoreThreshold;
+      if (!passesBase && !passesEnhanced) return false;
       return true;
+    });
+
+  // Assign dual-tier labels
+  const rankScore = (r) => {
+    const rsS = (v) => { if (v == null) return 0; if (v >= 10 && v <= 15) return 3; if (v >= 5) return 2; return 1; };
+    const emaS = (v) => { if (v == null) return 0; const a = Math.abs(v); if (a < 0.5) return 3; if (a < 1.0) return 2; return 1; };
+    return rsS(r.relStrengthVsIndex) + emaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
+  };
+
+  const taPicksFiltered = commonFiltered
+    .map((r) => {
+      const passesBase = r.composite.compositeScore >= scoreThreshold;
+      const passesEnhanced = r.composite.enhancedScore >= scoreThreshold;
+      let tier;
+      if (passesBase && passesEnhanced) tier = "CONSENSUS";
+      else if (passesBase) tier = "BASE_ONLY";
+      else tier = "ENHANCED_ONLY";
+      return {
+        ...r,
+        tier,
+        bypassedSMA200: r._bypassedSMA200 || false,
+        enhancedScore: r.composite.enhancedScore,
+        enhancedBonus: r.composite.enhancedBreakdown || {},
+      };
     })
-    .map((r) => ({
-      ...r,
-      // Add tier: HIGH_CONVICTION (>= 7.5) or STANDARD (>= 6.5)
-      tier: r.composite.compositeScore >= 7.5 ? "HIGH_CONVICTION" : "STANDARD",
-    }))
     .sort((a, b) => {
-      // Rank by backtested predictors: RS sweet spot + EMA20 proximity + R:R
-      const rsScore = (v) => {
-        if (v == null) return 0;
-        if (v >= 10 && v <= 15) return 3;  // Sweet Spot: 60.2% WR
-        if (v >= 5) return 2;              // Solid: 57.6% WR
-        return 1;                          // Mild: 56.5% WR
-      };
-      const emaScore = (v) => {
-        if (v == null) return 0;
-        const abs = Math.abs(v);
-        if (abs < 0.5) return 3;           // Ideal entry near EMA20
-        if (abs < 1.0) return 2;
-        return 1;                          // 1.0–2.0 ATR
-      };
-      const rrScore = (r) => (r.composite?.tradePlan?.rr || 0) * 0.5;
-      const rank = (r) => rsScore(r.relStrengthVsIndex) + emaScore(r.ema20Distance) + rrScore(r);
-      return rank(b) - rank(a);
+      // Consensus first, then by quality rank
+      const tierOrder = { CONSENSUS: 0, BASE_ONLY: 1, ENHANCED_ONLY: 2 };
+      const tierDiff = (tierOrder[a.tier] || 2) - (tierOrder[b.tier] || 2);
+      if (tierDiff !== 0) return tierDiff;
+      return rankScore(b) - rankScore(a);
     });
 
   // Sector Limit: max sectorMax picks per sector (regime-dependent diversification)
@@ -2770,7 +2821,10 @@ async function processAndNotify(env, config, allResults) {
     currency: r.currency, price: r.price, change: r.change, atr: r.atr,
     ema20Distance: r.ema20Distance, relStrengthVsIndex: r.relStrengthVsIndex,
     composite: r.composite, swing: { total: r.swing.total, setup: r.swing.setup, setupEmoji: r.swing.setupEmoji },
-    tier: r.tier || "STANDARD",
+    tier: r.tier || "CONSENSUS",
+    enhancedScore: r.enhancedScore ?? r.composite?.enhancedScore ?? null,
+    enhancedBonus: r.enhancedBonus ?? r.composite?.enhancedBreakdown ?? {},
+    bypassedSMA200: r.bypassedSMA200 || false,
     sector: sectorMap[r.symbol] || null,
     sectorAvgChange: sectorMap[r.symbol] ? (sectorAvgMap[sectorMap[r.symbol]] ?? null) : null,
   }));
@@ -2839,7 +2893,12 @@ async function processAndNotify(env, config, allResults) {
   const kvRsS = (v) => v != null ? (v >= 10 && v <= 15 ? 3 : v >= 5 ? 2 : 1) : 0;
   const kvEmaS = (v) => v != null ? (Math.abs(v) < 0.5 ? 3 : Math.abs(v) < 1.0 ? 2 : 1) : 0;
   const kvRank = (r) => kvRsS(r.relStrengthVsIndex) + kvEmaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
-  kvPicks = dedup(kvPicks).sort((a, b) => kvRank(b) - kvRank(a)).slice(0, 20);
+  const kvTierOrder = { CONSENSUS: 0, BASE_ONLY: 1, ENHANCED_ONLY: 2 };
+  kvPicks = dedup(kvPicks).sort((a, b) => {
+    const td = (kvTierOrder[a.tier] ?? 2) - (kvTierOrder[b.tier] ?? 2);
+    if (td !== 0) return td;
+    return kvRank(b) - kvRank(a);
+  }).slice(0, 20);
   kvMovers = dedup(kvMovers).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
   kvHits = dedup(kvHits).sort((a, b) => (b.swing?.total || 0) - (a.swing?.total || 0));
   kvMrPicks = dedup(kvMrPicks).sort((a, b) => (b.mr?.mrScore || 0) - (a.mr?.mrScore || 0)).slice(0, 10);
@@ -2860,13 +2919,17 @@ async function processAndNotify(env, config, allResults) {
         scanScope,
         marketRegime: { sp500: usRegime, dax: daxRegime, vix: Math.round(vixPrice * 10) / 10 },
         regimeParams: { effective: effectiveRegime, ...regimeParams },
-        filters: [`Score >= ${scoreThreshold}`, `RS 0-${regimeParams.rsMax}%`, `EMA20 < ${regimeParams.ema20Max} ATR`, "ADX > 20", "Index > SMA200 (hysteresis)", `Max ${regimeParams.sectorMax}/Sektor`],
+        filters: [`Score >= ${scoreThreshold}`, `RS 0-${regimeParams.rsMax}%`, `EMA20 < ${regimeParams.ema20Max} ATR`, "ADX > 20", "Index > SMA200 (Bypass: Aktie > eigene SMA200 + RS > 0 + ADX >= 25 + Score+1)", `Max ${regimeParams.sectorMax}/Sektor`],
       },
       timestamp: new Date().toISOString(),
     }), { expirationTtl: 259200 }),
   ]);
 
-  console.log(`[Scan] [${scanScope}] Merged: ${allResults.length} scanned, ${kvHits.length} hits, ${kvPicks.length} TA picks (${taPicks.length} new + ${kvPicks.length - currentPicksMapped.length} preserved), ${kvMrPicks.length} MR picks, ${kvMovers.length} movers, ${stats.errors} errors | Regime: ${effectiveRegime}`);
+  const sma200Bypassed = taPicks.filter(r => r.bypassedSMA200);
+  const sma200BypassInfo = sma200Bypassed.length > 0
+    ? ` | SMA200-Bypass: ${sma200Bypassed.map(r => r.displaySymbol).join(", ")}`
+    : "";
+  console.log(`[Scan] [${scanScope}] Merged: ${allResults.length} scanned, ${kvHits.length} hits, ${kvPicks.length} TA picks (${taPicks.length} new + ${kvPicks.length - currentPicksMapped.length} preserved), ${kvMrPicks.length} MR picks, ${kvMovers.length} movers, ${stats.errors} errors | Regime: ${effectiveRegime}${sma200BypassInfo}`);
 
   // Trade-Setup Scanner (swing >= 78) deaktiviert — ersetzt durch TA-Scanner + Mover Alerts
 
@@ -3029,27 +3092,42 @@ async function sendTelegramTAPicksAlert(taPicks, env) {
   const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const fmtP = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(2);
 
-  // Sort by backtested rank: RS sweet spot + EMA20 proximity + R:R
+  // Sort: Consensus first, then by quality rank
+  const tierOrder = { CONSENSUS: 0, BASE_ONLY: 1, ENHANCED_ONLY: 2 };
   const rsS = (v) => v != null ? (v >= 10 && v <= 15 ? 3 : v >= 5 ? 2 : 1) : 0;
   const emaS = (v) => v != null ? (Math.abs(v) < 0.5 ? 3 : Math.abs(v) < 1.0 ? 2 : 1) : 0;
   const rankPick = (r) => rsS(r.relStrengthVsIndex) + emaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
-  newPicks.sort((a, b) => rankPick(b) - rankPick(a));
+  newPicks.sort((a, b) => {
+    const td = (tierOrder[a.tier] ?? 2) - (tierOrder[b.tier] ?? 2);
+    if (td !== 0) return td;
+    return rankPick(b) - rankPick(a);
+  });
 
-  const lines = newPicks.slice(0, 10).map((r) => {
+  const tierBadgeMap = { CONSENSUS: "\u2B50", BASE_ONLY: "\uD83D\uDCCA", ENHANCED_ONLY: "\uD83D\uDCC8" };
+  const lines = newPicks.slice(0, 12).map((r) => {
     const tp = r.composite?.tradePlan;
     const rr = tp ? tp.rr : "?";
     const rs = r.relStrengthVsIndex != null
       ? `${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`
       : "\u2014";
-    const tierBadge = r.tier === "HIGH_CONVICTION" ? " \u{1F525}" : "";
+    const badge = tierBadgeMap[r.tier] || "\uD83D\uDCCA";
     const entryLabel = tp?.entryMode === "MARKET" ? "MKT" : "PB";
-    return `\u2022 <b>${esc(r.displaySymbol)}</b>${tierBadge}  R:R ${rr} [${entryLabel}]  \u2502  RS ${rs}`;
+    return `${badge} <b>${esc(r.displaySymbol)}</b>  R:R ${rr} [${entryLabel}]  \u2502  RS ${rs}`;
   });
 
+  // Count picks per tier for summary
+  const tierCounts = { CONSENSUS: 0, BASE_ONLY: 0, ENHANCED_ONLY: 0 };
+  for (const r of newPicks) tierCounts[r.tier] = (tierCounts[r.tier] || 0) + 1;
+  const tierSummary = [];
+  if (tierCounts.CONSENSUS > 0) tierSummary.push(`${tierCounts.CONSENSUS}\u2B50`);
+  if (tierCounts.BASE_ONLY > 0) tierSummary.push(`${tierCounts.BASE_ONLY}\uD83D\uDCCA`);
+  if (tierCounts.ENHANCED_ONLY > 0) tierSummary.push(`${tierCounts.ENHANCED_ONLY}\uD83D\uDCC8`);
+
   const header = `\u{1F4CA} <b>TA-Scanner: LONG Picks</b>`;
-  const subheader = `<i>Regime-filtered \u2022 ADX &gt; 20 \u2022 RS 0\u201320%</i>`;
+  const subheader = `<i>\u2B50 Consensus \u2022 \uD83D\uDCCA Base \u2022 \uD83D\uDCC8 Enhanced</i>`;
+  const tierLine = tierSummary.length > 0 ? `<i>${tierSummary.join(" \u2502 ")}</i>\n` : "";
   const appLink = `\n\n\u{1F517} <a href="https://nilsnoeller-tech.github.io/trading/">Details, Entry, Stop &amp; Ziel in der App</a>`;
-  const msg = `${header}\n${subheader}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n${lines.join("\n")}${appLink}`;
+  const msg = `${header}\n${subheader}\n${tierLine}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n${lines.join("\n")}${appLink}`;
 
   await sendTelegramMessages([msg], env);
   await Promise.all(cooldownWrites);
@@ -3813,6 +3891,42 @@ async function handleBriefingRoutes(url, request, env) {
     return jsonResponse(briefing, 200, 120);
   }
 
+  // POST /api/telegram/test-ta-picks — send test TA picks with all tiers
+  if (path === "/api/telegram/test-ta-picks" && request.method === "POST") {
+    if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
+      return jsonResponse({ error: "Telegram nicht konfiguriert." }, 500);
+    }
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const tierBadgeMap = { CONSENSUS: "\u2B50", BASE_ONLY: "\uD83D\uDCCA", ENHANCED_ONLY: "\uD83D\uDCC8" };
+    const testPicks = [
+      { sym: "NVDA", tier: "CONSENSUS", rr: 2.8, entry: "PB", rs: "+12.3%" },
+      { sym: "MSFT", tier: "CONSENSUS", rr: 2.1, entry: "MKT", rs: "+8.7%" },
+      { sym: "SAP", tier: "CONSENSUS", rr: 1.9, entry: "PB", rs: "+6.2%" },
+      { sym: "META", tier: "BASE_ONLY", rr: 2.4, entry: "PB", rs: "+10.1%" },
+      { sym: "AMZN", tier: "BASE_ONLY", rr: 1.7, entry: "PB", rs: "+5.8%" },
+      { sym: "SIE", tier: "ENHANCED_ONLY", rr: 2.6, entry: "PB", rs: "+9.4%" },
+      { sym: "LLY", tier: "ENHANCED_ONLY", rr: 1.8, entry: "PB", rs: "+7.1%" },
+      { sym: "AAPL", tier: "ENHANCED_ONLY", rr: 1.6, entry: "MKT", rs: "+4.3%" },
+    ];
+    const lines = testPicks.map((p) => {
+      const badge = tierBadgeMap[p.tier] || "\uD83D\uDCCA";
+      return `${badge} <b>${esc(p.sym)}</b>  R:R ${p.rr} [${p.entry}]  \u2502  RS ${p.rs}`;
+    });
+    const tierCounts = { CONSENSUS: 0, BASE_ONLY: 0, ENHANCED_ONLY: 0 };
+    for (const p of testPicks) tierCounts[p.tier]++;
+    const tierSummary = [];
+    if (tierCounts.CONSENSUS > 0) tierSummary.push(`${tierCounts.CONSENSUS}\u2B50`);
+    if (tierCounts.BASE_ONLY > 0) tierSummary.push(`${tierCounts.BASE_ONLY}\uD83D\uDCCA`);
+    if (tierCounts.ENHANCED_ONLY > 0) tierSummary.push(`${tierCounts.ENHANCED_ONLY}\uD83D\uDCC8`);
+    const header = `\uD83D\uDCCA <b>TA-Scanner: LONG Picks</b>  \u{1F9EA} TEST`;
+    const subheader = `<i>\u2B50 Consensus \u2022 \uD83D\uDCCA Base \u2022 \uD83D\uDCC8 Enhanced</i>`;
+    const tierLine = `<i>${tierSummary.join(" \u2502 ")}</i>\n`;
+    const appLink = `\n\n\uD83D\uDD17 <a href="https://nilsnoeller-tech.github.io/trading/">Details, Entry, Stop &amp; Ziel in der App</a>`;
+    const msg = `${header}\n${subheader}\n${tierLine}\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n${lines.join("\n")}${appLink}`;
+    const result = await sendTelegram(msg, env);
+    return jsonResponse({ ok: result.sent, message: "Test TA-Picks mit allen Tiers gesendet" });
+  }
+
   // POST /api/briefing/generate — manual trigger
   if (path === "/api/briefing/generate" && request.method === "POST") {
     let body;
@@ -4087,6 +4201,11 @@ export default {
       const resp = await handleAuthRoutes(url, request, env);
       if (resp) return resp;
       return jsonResponse({ error: "Unknown auth endpoint" }, 404);
+    }
+
+    // ── Test Telegram TA-Picks (no auth, POST only, temporary) ──
+    if (url.pathname === "/api/telegram/test-ta-picks" && request.method === "POST") {
+      return handleBriefingRoutes(url, request, env);
     }
 
     // ── Auth Middleware: all other routes require valid JWT ──

@@ -100,16 +100,27 @@ function TAPicksTab({ isMobile, onNavigate }) {
   const confColor = (c) => c === "STRONG BUY" ? C.green : c === "BUY" ? "#00D68F" : C.yellow;
 
   const regime = stats?.marketRegime;
-  const sp500Bull = regime?.sp500 === "bullish";
-  const daxBull = regime?.dax === "bullish";
+  const rp = stats?.regimeParams;
+  const bullishRegimes = ["STRONG_BULL", "MODERATE_BULL", "bullish"];
+  const sp500Bull = bullishRegimes.includes(regime?.sp500);
+  const daxBull = bullishRegimes.includes(regime?.dax);
+
+  // Tier counts for summary
+  const tierCounts = { CONSENSUS: 0, BASE_ONLY: 0, ENHANCED_ONLY: 0 };
+  for (const p of picks) tierCounts[p.tier] = (tierCounts[p.tier] || 0) + 1;
+  const tierMeta = {
+    CONSENSUS: { emoji: "\u2B50", label: "Consensus", color: "#f59e0b", desc: "Base + Enhanced" },
+    BASE_ONLY: { emoji: "\uD83D\uDCCA", label: "Base", color: C.accent, desc: "Nur Base-Score" },
+    ENHANCED_ONLY: { emoji: "\uD83D\uDCC8", label: "Enhanced", color: C.green, desc: "Nur Enhanced-Score" },
+  };
 
   return (
     <>
       <GlassCard>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Target size={18} style={{ color: C.accent }} />
-            <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Picks: Optimierte LONG Kandidaten</h3>
+            <h3 style={{ margin: 0, color: C.text, fontSize: 16, fontWeight: 700 }}>TA-Scanner: Dual-Tier Picks</h3>
           </div>
           <button onClick={fetchPicks} disabled={loading} style={{
             background: "transparent", border: `1px solid ${C.border}`, borderRadius: 8,
@@ -121,9 +132,21 @@ function TAPicksTab({ isMobile, onNavigate }) {
           </button>
         </div>
 
-        {/* Market Regime */}
+        {/* Tier Legend */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+          {Object.entries(tierMeta).map(([tier, meta]) => (
+            <span key={tier} style={{
+              fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+              color: meta.color, background: `${meta.color}12`, border: `1px solid ${meta.color}25`,
+            }}>
+              {meta.emoji} {meta.label} ({tierCounts[tier] || 0}) <span style={{ fontWeight: 400, opacity: 0.7 }}>{meta.desc}</span>
+            </span>
+          ))}
+        </div>
+
+        {/* Market Regime Status */}
         {regime && (
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             <span style={{
               fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
               color: sp500Bull ? C.green : C.red,
@@ -140,12 +163,27 @@ function TAPicksTab({ isMobile, onNavigate }) {
             }}>
               DAX {daxBull ? "\u2713 \u00FCber" : "\u2717 unter"} SMA200
             </span>
+            {rp?.effective && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
+                color: C.accent, background: `${C.accent}12`, border: `1px solid ${C.accent}25`,
+              }}>
+                Regime: {rp.effective.replace(/_/g, " ")}
+              </span>
+            )}
           </div>
         )}
 
-        {/* Filter Chips */}
+        {/* Filter Summary — dynamic from regime params */}
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
-          {["Score \u2265 7.5", "RS 0\u201315%", "EMA20 < 2 ATR", "Index > SMA200", "Max 2/Sektor"].map((f) => (
+          {[
+            `Score \u2265 ${rp?.scoreThreshold || "6.3"}`,
+            `RS 0\u2013${rp?.rsMax || 22}%`,
+            `EMA20 < ${rp?.ema20Max || 2.8} ATR`,
+            "RSI < 75",
+            "SMA200 (Bypass m\u00F6gl.)",
+            `Max ${rp?.sectorMax || 4}/Sektor`,
+          ].map((f) => (
             <span key={f} style={{
               fontSize: 9, color: C.accent, background: `${C.accent}10`, borderRadius: 4, padding: "1px 5px",
               border: `1px solid ${C.accent}20`,
@@ -154,7 +192,7 @@ function TAPicksTab({ isMobile, onNavigate }) {
         </div>
 
         <div style={{ color: C.textMuted, fontSize: 11, marginBottom: 4 }}>
-          Backtest-optimiert (PF 1.56 {"\u2022"} WR 57% {"\u2022"} MaxDD -4.5%) {"\u2022"} Depot EUR 45k
+          AKTUELL+ Hold30 (PF 1.38 {"\u2022"} CAGR 11.1% {"\u2022"} 1211 Trades/10J) {"\u2022"} 1% Risiko {"\u2022"} 25% Max-Position {"\u2022"} Max 30 Tage
           {stats && <span> {"\u2022"} {stats.totalScanned} gescannt, {stats.unfilteredPicks || stats.longPicks} unfiltered {"\u2192"} {stats.longPicks} Picks</span>}
         </div>
       </GlassCard>
@@ -190,20 +228,34 @@ function TAPicksTab({ isMobile, onNavigate }) {
             const range = tp.target - tp.stop;
             const entryPos = range > 0 ? ((tp.entry - tp.stop) / range) * 100 : 50;
             const inWl = isInWatchlist(r.symbol);
+            const tm = tierMeta[r.tier] || tierMeta.BASE_ONLY;
+            const borderColor = r.tier === "CONSENSUS" ? `${tm.color}50` : C.border;
 
             return (
-              <GlassCard key={i} style={{ padding: 16 }}>
-                {/* Header */}
+              <GlassCard key={i} style={{ padding: 16, border: `1px solid ${borderColor}` }}>
+                {/* Header: Tier Badge + Symbol + Scores */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: C.textDim, background: `${C.accent}15`, borderRadius: 6, padding: "2px 7px" }}>#{i + 1}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span title={`${tm.label}: ${tm.desc}`} style={{ fontSize: 14 }}>{tm.emoji}</span>
                     <span style={{ color: C.text, fontSize: 18, fontWeight: 700 }}>{r.displaySymbol}</span>
                     <span style={{ color: C.textDim, fontSize: 11 }}>{r.currency}</span>
+                    {r.bypassedSMA200 && (
+                      <span title="Individuelle St\u00E4rke: Aktie \u00FCber eigener SMA200 trotz schwachem Index" style={{
+                        fontSize: 9, fontWeight: 600, color: C.yellow, background: `${C.yellow}15`,
+                        borderRadius: 4, padding: "1px 5px", border: `1px solid ${C.yellow}30`,
+                      }}>SMA200 Bypass</span>
+                    )}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 10px", borderRadius: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span title="Base Score" style={{ fontSize: 14, fontWeight: 700, color: confColor(c.confidence), background: `${confColor(c.confidence)}15`, padding: "3px 8px", borderRadius: 6 }}>
                       {c.compositeScore}
                     </span>
+                    {r.enhancedScore != null && r.enhancedScore !== c.compositeScore && (
+                      <span title={`Enhanced Score`}
+                        style={{ fontSize: 12, fontWeight: 600, color: r.enhancedScore > c.compositeScore ? C.green : C.red, background: `${r.enhancedScore > c.compositeScore ? C.green : C.red}12`, padding: "2px 6px", borderRadius: 5 }}>
+                        E:{r.enhancedScore}
+                      </span>
+                    )}
                     {/* Watchlist Bookmark Button */}
                     <button onClick={() => toggleWatchlist(r)} title={inWl ? "Aus Watchlist entfernen" : "Zur Watchlist"} style={{
                       background: inWl ? `${C.accent}20` : "transparent", border: `1px solid ${inWl ? C.accent : C.border}40`,
@@ -221,6 +273,20 @@ function TAPicksTab({ isMobile, onNavigate }) {
                     {r.change >= 0 ? "+" : ""}{r.change?.toFixed(2)}%
                   </span>
                 </div>
+
+                {/* Finviz Mini-Chart (US-Aktien: Daily mit SMA + Patterns) */}
+                {isFinvizAvailable(r.symbol) && (
+                  <div style={{ marginBottom: 10, borderRadius: 8, overflow: "hidden", border: `1px solid ${C.border}` }}>
+                    <img
+                      src={getFinvizChartUrl(r.displaySymbol || r.symbol, "l")}
+                      alt={`${r.displaySymbol} Chart`}
+                      style={{ width: "100%", display: "block" }}
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => { e.target.parentElement.style.display = "none"; }}
+                    />
+                  </div>
+                )}
 
                 {/* Entry / Stop / Target Bar */}
                 <div style={{ marginBottom: 10 }}>
@@ -460,9 +526,10 @@ function WatchlistTab({ isMobile }) {
                 {hasChart && !chartHidden && (
                   <div style={{ padding: "0 16px", marginBottom: 8 }}>
                     <img
-                      src={getFinvizChartUrl(w.symbol)}
+                      src={getFinvizChartUrl(w.symbol, "l")}
                       alt={`${w.symbol} Chart`}
                       style={{ width: "100%", borderRadius: 8, display: "block" }}
+                      referrerPolicy="no-referrer"
                       onError={() => setChartErrors(prev => ({ ...prev, [w.symbol]: true }))}
                     />
                   </div>

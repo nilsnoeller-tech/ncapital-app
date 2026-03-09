@@ -36,6 +36,12 @@ function getStartkapital() {
   const saved = localStorage.getItem(key);
   return saved ? parseFloat(saved) : DEFAULT_STARTKAPITAL;
 }
+function hasExplicitStartkapital() {
+  const user = getUser();
+  if (!user) return false;
+  const key = `ncapital-startkapital-${user.username.toLowerCase()}`;
+  return localStorage.getItem(key) !== null;
+}
 function setStartkapital(value) {
   const user = getUser();
   if (!user) return;
@@ -2429,7 +2435,11 @@ export default function TradingJournal() {
     })();
   }, [authed]);
 
-  const portfolio = useMemo(() => computePortfolio(tradeList, startkapital), [tradeList, startkapital]);
+  const portfolio = useMemo(() => {
+    const p = computePortfolio(tradeList, startkapital);
+    p.startkapitalExplicit = hasExplicitStartkapital();
+    return p;
+  }, [tradeList, startkapital]);
 
   const addTrade = useCallback((trade) => {
     setTradeList(prev => [...prev, trade]);
@@ -2463,7 +2473,7 @@ export default function TradingJournal() {
 
   const renderPage = () => {
     switch (page) {
-      case "briefing": return <Briefing onNavigate={navigate} />;
+      case "briefing": return <Briefing onNavigate={navigate} portfolio={portfolio} />;
       case "check": return <TradeCheck portfolio={portfolio} tradeList={tradeList} onAddTrade={addTrade} onUpdateTrade={updateTrade} onNavigate={navigate} />;
       case "trades": return <TradeLog tradeList={tradeList} onUpdateTrade={updateTrade} onDeleteTrade={deleteTrade} onAddTrade={addTrade} />;
       case "dashboard": return <Dashboard portfolio={portfolio} />;
