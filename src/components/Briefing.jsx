@@ -958,7 +958,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment, por
             background: `${C.yellow}12`, borderRadius: 5, padding: "2px 8px",
             border: `1px solid ${C.yellow}25`,
           }}>
-            {"\u2699\uFE0F"} Startkapital in Einstellungen setzen f\u00fcr Positionsgr\u00f6\u00dfe & St\u00fcckzahl
+            {"\u2699\uFE0F"} Startkapital in Einstellungen setzen fuer Positionsgroesse & Stueckzahl
           </span>
         )}
       </div>
