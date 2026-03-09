@@ -630,11 +630,12 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
   const kapitaleinsatz = toEur(orderGroesse * einstieg);
   const depotAnteil = kontostand > 0 ? (kapitaleinsatz / kontostand) * 100 : 0;
 
-  // ── Score basierend auf Composite Score ──
+  // ── Score basierend auf Enhanced Score ──
   const { totalScore, maxScore } = useMemo(() => {
     if (!compositeResult) return { totalScore: 0, maxScore: 11 };
-    // Composite Score Bereich: -11 bis +11, normalisieren auf 0-100 fuer Ampel
-    const normalized = Math.round(((compositeResult.compositeScore + 11) / 22) * 100);
+    const es = compositeResult.enhancedScore || compositeResult.compositeScore;
+    // Enhanced Score Bereich: ca. -10 bis +11, normalisieren auf 0-100 fuer Ampel
+    const normalized = Math.round(((es + 10) / 21) * 100);
     return { totalScore: normalized, maxScore: 100 };
   }, [compositeResult]);
 
@@ -1039,12 +1040,12 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
               </div>
               <div>
                 <div style={{ fontSize: isMobile ? 18 : 20, fontWeight: 800, color: C.text }}>Composite Score</div>
-                <div style={{ fontSize: 13, color: C.textMuted }}>Automatische Analyse aus 5 Faktoren</div>
+                <div style={{ fontSize: 13, color: C.textMuted }}>Automatische Analyse aus 6 Faktoren + Enhanced</div>
               </div>
             </div>
             {compositeResult && (
               <div style={{ padding: "8px 12px", borderRadius: 8, background: `${C.green}08`, border: `1px solid ${C.green}20`, fontSize: 12, color: C.green, display: "flex", alignItems: "center", gap: 6 }}>
-                <Zap size={12} /> Score berechnet: {compositeResult.compositeScore.toFixed(1)} / 11.0 ({compositeResult.confidence})
+                <Zap size={12} /> Base: {compositeResult.compositeScore.toFixed(1)} | Enhanced: {(compositeResult.enhancedScore || compositeResult.compositeScore).toFixed(1)} ({compositeResult.confidence})
               </div>
             )}
             {autoLoading && (
@@ -1061,11 +1062,12 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
 
           {compositeResult && compositeResult.breakdown && (() => {
             const factors = [
-              { key: "trend", label: "Trend", emoji: "\uD83D\uDCC8", max: 6, color: C.green, desc: "Daily \u00D7 1.5 + Weekly \u00D7 1.0 + Monthly \u00D7 0.5" },
-              { key: "rsi", label: "RSI", emoji: "\uD83D\uDCCA", max: 1.5, color: C.accent, desc: "Relative Strength Index" },
-              { key: "macd", label: "MACD", emoji: "\u26A1", max: 1.0, color: C.yellow, desc: "MACD Histogramm" },
-              { key: "ma", label: "MA Alignment", emoji: "\uD83C\uDFAF", max: 2.0, color: C.blue, desc: "SMA20 / SMA50 / SMA200 Ordnung" },
-              { key: "volume", label: "Volume", emoji: "\uD83D\uDD0A", max: 1.0, color: "#E056A0", desc: "Volumen vs. 20-Tage-Durchschnitt" },
+              { key: "trend", label: "Trend", emoji: "\uD83D\uDCC8", max: 4, color: C.green, desc: "Daily \u00D7 1.0 + Weekly \u00D7 0.7 + Monthly \u00D7 0.3" },
+              { key: "rsi", label: "RSI", emoji: "\uD83D\uDCCA", max: 2, color: C.accent, desc: "Relative Strength Index (Uptrend-Modifier + Divergenz)" },
+              { key: "macd", label: "MACD", emoji: "\u26A1", max: 1.5, color: C.yellow, desc: "MACD Histogramm (graduell + Crossover)" },
+              { key: "ma", label: "MA Alignment", emoji: "\uD83C\uDFAF", max: 1.5, color: C.blue, desc: "EMA20 / SMA50 / SMA200 Ordnung" },
+              { key: "volume", label: "Volume", emoji: "\uD83D\uDD0A", max: 0.5, color: "#E056A0", desc: "5-Tage-Trend + OBV" },
+              { key: "breakout", label: "Breakout", emoji: "\uD83D\uDE80", max: 1, color: "#F59E0B", desc: "Naehe 52w/20d High + BB Squeeze" },
             ];
             return factors.map(f => {
               const bd = compositeResult.breakdown[f.key];
@@ -1106,22 +1108,67 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
             });
           })()}
 
-          {compositeResult && (
-            <GlassCard style={{ marginTop: 4, textAlign: "center", background: `linear-gradient(135deg, ${compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red}08, ${C.card})` }}>
-              <div style={{ fontSize: 13, color: C.textMuted, fontWeight: 600, marginBottom: 4 }}>Composite Score</div>
-              <div style={{ fontSize: 36, fontWeight: 800, color: compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red }}>
-                {compositeResult.compositeScore.toFixed(1)}
+          {/* Enhanced Bonus Section */}
+          {compositeResult?.enhanced && (
+            <GlassCard style={{ marginBottom: 10, padding: "14px 18px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 16 }}>{"\u2728"}</span>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>Enhanced Bonus</div>
+                <div style={{
+                  marginLeft: "auto", padding: "3px 10px", borderRadius: 6, fontSize: 13, fontWeight: 700,
+                  color: compositeResult.enhanced.bonus > 0 ? C.green : compositeResult.enhanced.bonus < 0 ? C.red : C.textMuted,
+                  background: `${compositeResult.enhanced.bonus > 0 ? C.green : compositeResult.enhanced.bonus < 0 ? C.red : C.textMuted}10`,
+                }}>
+                  {compositeResult.enhanced.bonus > 0 ? "+" : ""}{compositeResult.enhanced.bonus.toFixed(1)}
+                </div>
               </div>
-              <div style={{
-                display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 16px", borderRadius: 20, marginTop: 8,
-                fontSize: 13, fontWeight: 700,
-                color: compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red,
-                background: `${compositeResult.compositeScore >= 5 ? C.green : compositeResult.compositeScore >= 2 ? "#00D68F" : compositeResult.compositeScore >= 0 ? C.yellow : C.red}15`,
-              }}>
-                {compositeResult.confidence}
-              </div>
+              {[
+                { key: "stoch", label: "StochRSI", max: 0.5 },
+                { key: "structure", label: "Struktur", max: 0.5 },
+                { key: "pullback", label: "Pullback", max: 0.3 },
+                { key: "buyer", label: "Kaeufer", max: 0.2 },
+                { key: "distribution", label: "Distribution", max: 0.5 },
+              ].map(f => {
+                const d = compositeResult.enhanced[f.key];
+                if (!d) return null;
+                return (
+                  <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
+                    <span style={{ color: C.textDim, width: 80 }}>{f.label}</span>
+                    <span style={{ color: d.score > 0 ? C.green : d.score < 0 ? C.red : C.textMuted, fontWeight: 700, width: 40 }}>
+                      {d.score > 0 ? "+" : ""}{d.score.toFixed(1)}
+                    </span>
+                    <span style={{ color: C.textDim, fontSize: 11 }}>{d.detail}</span>
+                  </div>
+                );
+              })}
             </GlassCard>
           )}
+
+          {/* Score Summary */}
+          {compositeResult && (() => {
+            const es = compositeResult.enhancedScore || compositeResult.compositeScore;
+            const scoreColor = es >= 5 ? C.green : es >= 2 ? "#00D68F" : es >= 0 ? C.yellow : C.red;
+            return (
+              <GlassCard style={{ marginTop: 4, textAlign: "center", background: `linear-gradient(135deg, ${scoreColor}08, ${C.card})` }}>
+                <div style={{ display: "flex", justifyContent: "center", gap: 30, marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>Base Score</div>
+                    <div style={{ fontSize: 24, fontWeight: 800, color: C.textMuted }}>{compositeResult.compositeScore.toFixed(1)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: scoreColor, fontWeight: 600 }}>Enhanced Score</div>
+                    <div style={{ fontSize: 36, fontWeight: 800, color: scoreColor }}>{es.toFixed(1)}</div>
+                  </div>
+                </div>
+                <div style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 16px", borderRadius: 20,
+                  fontSize: 13, fontWeight: 700, color: scoreColor, background: `${scoreColor}15`,
+                }}>
+                  {compositeResult.confidence}
+                </div>
+              </GlassCard>
+            );
+          })()}
         </div>
       )}
 

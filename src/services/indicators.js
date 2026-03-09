@@ -392,8 +392,9 @@ export function evaluateMerkmalliste(candles, entryPrice, indexCandles = null) {
   return results;
 }
 
-// ─── Composite Score (Frontend-Version, identisch zu worker.js computeCompositeScore) ───
-// Score range: ~-11.0 to ~+11.0 (Trend D*1.5+W*1.0+M*0.5 + RSI + MACD + Volume + MA)
+// ─── Composite Score (Frontend-Version, synchron mit worker.js computeCompositeScore) ───
+// Base: Trend(D×1.0+W×0.7+M×0.3) + RSI(±2) + MACD(±1.5) + MA(±1.5) + Volume(±0.5) + Breakout(0..1)
+// Enhanced: + StochRSI + Structure + Pullback + Buyer - Distribution
 
 export function computeCompositeScoreFrontend(candles) {
   if (!candles || candles.length < 60) return null;
@@ -402,59 +403,142 @@ export function computeCompositeScoreFrontend(candles) {
   const price = closes[closes.length - 1];
   const last = candles[candles.length - 1];
 
-  // Indikatoren
+  // ── Indikatoren ──
   const ema20Arr = EMA.calculate({ values: closes, period: 20 });
   const sma20Arr = SMA.calculate({ values: closes, period: 20 });
   const sma50Arr = SMA.calculate({ values: closes, period: 50 });
   const sma200Arr = closes.length >= 200 ? SMA.calculate({ values: closes, period: 200 }) : [];
   const rsiArr = RSI.calculate({ values: closes, period: 14 });
 
+  const e20 = ema20Arr.length > 0 ? ema20Arr[ema20Arr.length - 1] : price;
   const sma20 = sma20Arr.length > 0 ? sma20Arr[sma20Arr.length - 1] : price;
   const sma50 = sma50Arr.length > 0 ? sma50Arr[sma50Arr.length - 1] : price;
   const sma200 = sma200Arr.length > 0 ? sma200Arr[sma200Arr.length - 1] : null;
   const rsi = rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : 50;
+  const atr = calcATR(candles, 14);
 
-  // MACD berechnen (12, 26, 9)
+  // MACD (12, 26, 9)
   const ema12 = EMA.calculate({ values: closes, period: 12 });
   const ema26 = EMA.calculate({ values: closes, period: 26 });
   const macdLine = [];
   const offset = ema12.length - ema26.length;
-  for (let i = 0; i < ema26.length; i++) {
-    macdLine.push(ema12[i + offset] - ema26[i]);
-  }
+  for (let i = 0; i < ema26.length; i++) macdLine.push(ema12[i + offset] - ema26[i]);
   const signalLine = macdLine.length >= 9 ? EMA.calculate({ values: macdLine, period: 9 }) : [];
   const histOffset = macdLine.length - signalLine.length;
   const macdHist = signalLine.map((s, i) => macdLine[i + histOffset] - s);
 
-  // Volume Ratio
-  const volumes = candles.map(c => c.volume || 0);
-  const vol20 = volumes.slice(-20);
-  const avgVol = vol20.length > 0 ? vol20.reduce((a, b) => a + b, 0) / vol20.length : 1;
-  const lastVol = volumes[volumes.length - 1] || 0;
-  const volRatio = avgVol > 0 ? lastVol / avgVol : 1;
-  const lastIsRed = last.close < last.open;
+  // Bollinger Bands
+  const bbArr = closes.length >= 20 ? BollingerBands.calculate({ values: closes, period: 20, stdDev: 2 }) : [];
+  let bbSqueeze = false, bbRelPos = null;
+  if (bbArr.length >= 20) {
+    const bb = bbArr[bbArr.length - 1];
+    const bw = bb.upper - bb.lower;
+    const recentBW = bbArr.slice(-Math.min(50, bbArr.length)).map(b => b.upper - b.lower);
+    const avgBW = recentBW.reduce((s, v) => s + v, 0) / recentBW.length;
+    bbSqueeze = bw < avgBW * 0.75;
+    bbRelPos = bw > 0 ? (price - bb.lower) / bw : 0.5;
+  }
 
-  // 1. TREND (Daily*1.5 + Weekly*1.0 + Monthly*0.5, max +/-6)
+  // Volume (5d trend + OBV)
+  const last5 = candles.slice(-5), prev5 = candles.slice(-10, -5);
+  const avg5vol = last5.reduce((s, c) => s + c.volume, 0) / 5;
+  const avgPrev5vol = prev5.length > 0 ? prev5.reduce((s, c) => s + c.volume, 0) / prev5.length : avg5vol;
+  const vol5dTrend = avgPrev5vol > 0 ? (avg5vol - avgPrev5vol) / avgPrev5vol : 0;
+  const last5green = last5.filter(c => c.close >= c.open).length;
+  const lastIsRed = last.close < last.open;
+  const avgVol20 = candles.slice(-20).reduce((s, c) => s + c.volume, 0) / 20;
+  const volRatio = avgVol20 > 0 ? last.volume / avgVol20 : 1;
+
+  // OBV rising (simplified)
+  let obvRising = false;
+  if (candles.length >= 20) {
+    let obv = 0;
+    const obvArr = candles.slice(-30).map(c => { obv += c.close >= c.open ? c.volume : -c.volume; return obv; });
+    if (obvArr.length >= 10) {
+      const obvEma = EMA.calculate({ values: obvArr, period: 10 });
+      if (obvEma.length >= 2) obvRising = obvEma[obvEma.length - 1] > obvEma[obvEma.length - 2];
+    }
+  }
+
+  // RSI Bullish Divergence
+  let rsiBullDiv = false;
+  if (rsiArr.length >= 30 && closes.length >= 40) {
+    const rsiOff = closes.length - rsiArr.length;
+    let minP20 = Infinity, rsiMin20 = 50;
+    for (let i = closes.length - 20; i < closes.length; i++) {
+      if (closes[i] < minP20) { minP20 = closes[i]; const ri = i - rsiOff; if (ri >= 0 && ri < rsiArr.length) rsiMin20 = rsiArr[ri]; }
+    }
+    let minP40 = Infinity, rsiMin40 = 50;
+    for (let i = Math.max(0, closes.length - 40); i < closes.length - 15; i++) {
+      if (closes[i] < minP40) { minP40 = closes[i]; const ri = i - rsiOff; if (ri >= 0 && ri < rsiArr.length) rsiMin40 = rsiArr[ri]; }
+    }
+    if (minP20 <= minP40 * 1.02 && rsiMin20 > rsiMin40 + 3) rsiBullDiv = true;
+  }
+
+  // StochRSI (simplified: RSI of RSI over 14 periods, smoothed)
+  let stochOversold = false, stochBullish = false;
+  if (rsiArr.length >= 20) {
+    const r14 = rsiArr.slice(-14);
+    const minR = Math.min(...r14), maxR = Math.max(...r14);
+    const stochNow = maxR > minR ? ((rsi - minR) / (maxR - minR)) * 100 : 50;
+    const r14prev = rsiArr.slice(-15, -1);
+    const minRp = Math.min(...r14prev), maxRp = Math.max(...r14prev);
+    const stochPrev = maxRp > minRp ? ((rsiArr[rsiArr.length - 2] - minRp) / (maxRp - minRp)) * 100 : 50;
+    stochOversold = stochNow < 25;
+    stochBullish = stochNow > stochPrev && stochPrev < 30;
+  }
+
+  // HH/HL + Higher Low
+  const swingHighs = [], swingLows = [];
+  const lb = Math.min(candles.length, 120);
+  const rc = candles.slice(-lb);
+  for (let i = 3; i < rc.length - 3; i++) {
+    if (rc[i].high >= rc[i-1].high && rc[i].high >= rc[i-2].high && rc[i].high >= rc[i-3].high && rc[i].high >= rc[i+1].high && rc[i].high >= rc[i+2].high && rc[i].high >= rc[i+3].high) swingHighs.push(rc[i].high);
+    if (rc[i].low <= rc[i-1].low && rc[i].low <= rc[i-2].low && rc[i].low <= rc[i-3].low && rc[i].low <= rc[i+1].low && rc[i].low <= rc[i+2].low && rc[i].low <= rc[i+3].low) swingLows.push(rc[i].low);
+  }
+  const hhhl = swingHighs.length >= 2 && swingLows.length >= 2 && swingHighs[swingHighs.length - 1] > swingHighs[swingHighs.length - 2] && swingLows[swingLows.length - 1] > swingLows[swingLows.length - 2];
+  const higherLow = swingLows.length >= 2 && swingLows[swingLows.length - 1] > swingLows[swingLows.length - 2];
+
+  // Pullback volume declining
+  const last5Down = candles.slice(-10).filter(c => c.close < c.open).slice(-5);
+  const pullbackVolDeclining = last5Down.length >= 3 && last5Down[last5Down.length - 1].volume < last5Down[0].volume * 0.8;
+
+  // Support confluence
+  const distToEma20 = Math.abs(price - e20) / e20 * 100;
+  const priceAboveEma20 = price > e20;
+  let confluence = 0;
+  if (distToEma20 < 2 && priceAboveEma20) confluence++;
+  const distToSma50 = Math.abs(price - sma50) / sma50 * 100;
+  if (distToSma50 < 3 && price > sma50) confluence++;
+
+  // Close near day high
+  const dayRange = last.high - last.low;
+  const closeNearDayHigh = dayRange > 0 ? (last.close - last.low) / dayRange > 0.90 : false;
+
+  // Distribution / Selling pressure
+  const lastBodySize = Math.abs(last.close - last.open);
+  const sellingPressure = lastIsRed && volRatio >= 1.2 && lastBodySize > (atr || price * 0.02) * 0.8;
+  const heavySelling = lastIsRed && volRatio >= 1.8 && lastBodySize > atr;
+  const last3 = candles.slice(-3);
+  const redHighVolCount = last3.filter(c => c.close < c.open && avgVol20 > 0 && c.volume > avgVol20 * 1.2).length;
+  const distributionPattern = redHighVolCount >= 2;
+
+  // ═══════════════════════════════════════════════════════════
+  // 1. TREND (Daily×1.0 + Weekly×0.7 + Monthly×0.3, max ±4.0)
+  // ═══════════════════════════════════════════════════════════
   let dailyTrend = 0;
   if (sma20Arr.length >= 2) {
     const sma20Slope = (sma20 - sma20Arr[sma20Arr.length - 2]) / sma20Arr[sma20Arr.length - 2] * 100;
-    if (price > sma20 && sma20 > sma50 && (sma200 ? sma50 > sma200 : true) && sma20Slope > 0.3) {
-      dailyTrend = 2;
-    } else if (price > (sma200 || sma50) && sma20Slope >= 0) {
-      dailyTrend = 1;
-    } else if (price < sma50 && price < sma20 && sma20 < sma50 && sma20Slope < -0.3) {
-      dailyTrend = -2;
-    } else if (price < (sma200 || sma50)) {
-      dailyTrend = -1;
-    }
+    if (price > sma20 && sma20 > sma50 && (sma200 ? sma50 > sma200 : true) && sma20Slope > 0.3) dailyTrend = 2;
+    else if (price > (sma200 || sma50) && sma20Slope >= 0) dailyTrend = 1;
+    else if (price < sma50 && price < sma20 && sma20 < sma50 && sma20Slope < -0.3) dailyTrend = -2;
+    else if (price < (sma200 || sma50)) dailyTrend = -1;
   }
 
   let weeklyTrend = 0;
   if (sma200 && closes.length >= 60) {
     const sma50arr10ago = SMA.calculate({ values: closes.slice(0, -10), period: 50 });
-    const sma50slope = sma50arr10ago.length > 0
-      ? (sma50 - sma50arr10ago[sma50arr10ago.length - 1]) / sma50arr10ago[sma50arr10ago.length - 1] * 100
-      : 0;
+    const sma50slope = sma50arr10ago.length > 0 ? (sma50 - sma50arr10ago[sma50arr10ago.length - 1]) / sma50arr10ago[sma50arr10ago.length - 1] * 100 : 0;
     if (sma50 > sma200 && sma50slope > 0.2) weeklyTrend = 2;
     else if (sma50 > sma200) weeklyTrend = 1;
     else if (sma50 < sma200 && sma50slope < -0.2) weeklyTrend = -2;
@@ -466,9 +550,7 @@ export function computeCompositeScoreFrontend(candles) {
   let monthlyTrend = 0;
   if (sma200 && closes.length >= 220) {
     const sma200arr20ago = SMA.calculate({ values: closes.slice(0, -20), period: 200 });
-    const sma200slope = sma200arr20ago.length > 0
-      ? (sma200 - sma200arr20ago[sma200arr20ago.length - 1]) / sma200arr20ago[sma200arr20ago.length - 1] * 100
-      : 0;
+    const sma200slope = sma200arr20ago.length > 0 ? (sma200 - sma200arr20ago[sma200arr20ago.length - 1]) / sma200arr20ago[sma200arr20ago.length - 1] * 100 : 0;
     if (price > sma200 && sma200slope > 0.1) monthlyTrend = 2;
     else if (price > sma200) monthlyTrend = 1;
     else if (price < sma200 && sma200slope < -0.1) monthlyTrend = -2;
@@ -477,44 +559,106 @@ export function computeCompositeScoreFrontend(candles) {
     monthlyTrend = weeklyTrend;
   }
 
-  const trendScore = Math.round((dailyTrend * 1.5 + weeklyTrend * 1.0 + monthlyTrend * 0.5) * 10) / 10;
+  const trendScore = Math.round((dailyTrend * 1.0 + weeklyTrend * 0.7 + monthlyTrend * 0.3) * 10) / 10;
 
-  // 2. RSI (+/-1.5)
+  // ═══════════════════════════════════════════════════════════
+  // 2. RSI (±2.0) — with uptrend modifiers + divergence bonus
+  // ═══════════════════════════════════════════════════════════
   let rsiScore = 0;
-  if (rsi < 30) rsiScore = 1.5;
+  if (rsi < 30 && trendScore > 0) rsiScore = 2.0;
+  else if (rsi < 30) rsiScore = 1.5;
+  else if (rsi < 40 && trendScore > 0) rsiScore = 1.0;
   else if (rsi < 40) rsiScore = 0.5;
-  else if (rsi > 70) rsiScore = -1.5;
-  else if (rsi > 60) rsiScore = -0.3;
+  else if (rsi > 80) rsiScore = -1.0;
+  else if (rsi > 70) rsiScore = -0.5;
+  else if (rsi > 60) rsiScore = -0.2;
+  if (rsiBullDiv) rsiScore += 1.0;
+  rsiScore = Math.max(-2.0, Math.min(2.0, rsiScore));
 
-  // 3. MACD Histogram (+/-1.0)
+  // ═══════════════════════════════════════════════════════════
+  // 3. MACD Histogram (±1.5) — graduated + crossover bonus
+  // ═══════════════════════════════════════════════════════════
   let macdScore = 0;
   if (macdHist.length > 0) {
-    macdScore = macdHist[macdHist.length - 1] > 0 ? 1.0 : -1.0;
+    const lastH = macdHist[macdHist.length - 1];
+    const prevH = macdHist.length > 1 ? macdHist[macdHist.length - 2] : 0;
+    const histRising = lastH > prevH;
+    if (lastH > 0 && histRising) macdScore = 1.5;
+    else if (lastH > 0) macdScore = 0.5;
+    else if (lastH < 0 && histRising) macdScore = -0.3;
+    else if (lastH < 0) macdScore = -1.5;
+    if (macdHist.length >= 3 && macdHist[macdHist.length - 3] < 0 && lastH > 0) macdScore = Math.min(macdScore + 0.5, 1.5);
   }
 
-  // 4. MA Alignment (+/-2.0)
+  // ═══════════════════════════════════════════════════════════
+  // 4. MA Alignment (±1.5) — using EMA20 for faster response
+  // ═══════════════════════════════════════════════════════════
   let maScore = 0;
   if (sma200) {
-    if (price > sma20 && sma20 > sma50 && sma50 > sma200) maScore = 2.0;
-    else if (price < sma20 && sma20 < sma50 && sma50 < sma200) maScore = -2.0;
+    if (price > e20 && e20 > sma50 && sma50 > sma200) maScore = 1.5;
+    else if (price < e20 && e20 < sma50 && sma50 < sma200) maScore = -1.5;
     else if (price > sma200) maScore = 0.5;
     else if (price < sma200) maScore = -0.5;
   } else {
-    if (price > sma20 && sma20 > sma50) maScore = 1.5;
-    else if (price < sma20 && sma20 < sma50) maScore = -1.5;
-    else if (price > sma50) maScore = 0.5;
-    else maScore = -0.5;
+    if (price > e20 && e20 > sma50) maScore = 1.0;
+    else if (price < e20 && e20 < sma50) maScore = -1.0;
+    else if (price > sma50) maScore = 0.3;
+    else maScore = -0.3;
   }
 
-  // 5. Volume (+/-1.0)
+  // ═══════════════════════════════════════════════════════════
+  // 5. Volume (±0.5) — 5d trend + OBV
+  // ═══════════════════════════════════════════════════════════
   let volumeScore = 0;
-  if (volRatio >= 1.5 && !lastIsRed) volumeScore = 1.0;
-  else if (volRatio >= 1.2 && !lastIsRed) volumeScore = 0.5;
-  else if (volRatio >= 1.5 && lastIsRed) volumeScore = -1.0;
-  else if (volRatio >= 1.2 && lastIsRed) volumeScore = -0.5;
+  if (vol5dTrend > 0.2 && last5green >= 3) volumeScore = 0.5;
+  else if (vol5dTrend > 0.2 && last5green < 2) volumeScore = -0.5;
+  if (obvRising && last5green >= 3) volumeScore = Math.min(volumeScore + 0.2, 0.5);
 
-  const compositeScore = Math.round((trendScore + rsiScore + macdScore + maScore + volumeScore) * 10) / 10;
+  // ═══════════════════════════════════════════════════════════
+  // 6. Breakout Proximity (0 to +1.0) — 52w/20d high + BB squeeze
+  // ═══════════════════════════════════════════════════════════
+  let breakoutScore = 0;
+  {
+    const high20d = Math.max(...closes.slice(-20));
+    const high52w = Math.max(...closes);
+    if ((high52w - price) / high52w * 100 < 2) breakoutScore += 0.5;
+    if ((high20d - price) / high20d * 100 < 1) breakoutScore += 0.5;
+    if (bbSqueeze && bbRelPos != null && bbRelPos > 0.5) breakoutScore += 0.3;
+    breakoutScore = Math.min(1.0, breakoutScore);
+  }
 
+  // ═══════════════════════════════════════════════════════════
+  // COMPOSITE (BASE) SCORE
+  // ═══════════════════════════════════════════════════════════
+  const compositeScore = Math.round((trendScore + rsiScore + macdScore + maScore + volumeScore + breakoutScore) * 10) / 10;
+
+  // ═══════════════════════════════════════════════════════════
+  // ENHANCED SCORE — additional quality signals
+  // ═══════════════════════════════════════════════════════════
+  let stochBonus = 0;
+  if (stochOversold && trendScore > 0) stochBonus = 0.5;
+  else if (stochBullish && trendScore > 0) stochBonus = 0.3;
+
+  let structureBonus = 0;
+  if (hhhl && higherLow) structureBonus = 0.5;
+  else if (higherLow) structureBonus = 0.3;
+
+  let pullbackBonus = 0;
+  if (pullbackVolDeclining && trendScore > 0) pullbackBonus += 0.2;
+  if (confluence >= 2) pullbackBonus += 0.1;
+
+  const buyerBonus = closeNearDayHigh ? 0.2 : 0;
+
+  let distPenalty = 0;
+  if (distributionPattern || heavySelling) distPenalty = -0.5;
+  else if (sellingPressure) distPenalty = -0.3;
+
+  const enhancedBonus = Math.round((stochBonus + structureBonus + pullbackBonus + buyerBonus + distPenalty) * 10) / 10;
+  const enhancedScore = Math.round((compositeScore + enhancedBonus) * 10) / 10;
+
+  // ═══════════════════════════════════════════════════════════
+  // CONFIDENCE
+  // ═══════════════════════════════════════════════════════════
   let confidence;
   if (compositeScore >= 5) confidence = "STRONG BUY";
   else if (compositeScore >= 2) confidence = "BUY";
@@ -524,14 +668,25 @@ export function computeCompositeScoreFrontend(candles) {
 
   return {
     compositeScore,
+    enhancedScore,
+    enhancedBonus,
     confidence,
     breakdown: {
-      trend: { score: trendScore, max: 6, detail: `Daily ${dailyTrend > 0 ? "+" : ""}${dailyTrend} \u00D7 1.5, Weekly ${weeklyTrend > 0 ? "+" : ""}${weeklyTrend} \u00D7 1.0, Monthly ${monthlyTrend > 0 ? "+" : ""}${monthlyTrend} \u00D7 0.5` },
-      rsi: { score: rsiScore, max: 1.5, detail: `RSI ${rsi.toFixed(1)}` },
-      macd: { score: macdScore, max: 1.0, detail: `MACD Histogramm ${macdHist.length > 0 ? (macdHist[macdHist.length - 1] > 0 ? "positiv" : "negativ") : "n/a"}` },
-      ma: { score: maScore, max: 2.0, detail: `SMA20 ${sma20.toFixed(0)}, SMA50 ${sma50.toFixed(0)}${sma200 ? ", SMA200 " + sma200.toFixed(0) : ""}` },
-      volume: { score: volumeScore, max: 1.0, detail: `Vol-Ratio ${volRatio.toFixed(2)}x${lastIsRed ? " (rot)" : " (gr\u00FCn)"}` },
+      trend: { score: trendScore, max: 4, detail: `Daily ${dailyTrend > 0 ? "+" : ""}${dailyTrend} \u00D7 1.0, Weekly ${weeklyTrend > 0 ? "+" : ""}${weeklyTrend} \u00D7 0.7, Monthly ${monthlyTrend > 0 ? "+" : ""}${monthlyTrend} \u00D7 0.3` },
+      rsi: { score: rsiScore, max: 2, detail: `RSI ${rsi.toFixed(1)}${rsiBullDiv ? " + Divergenz" : ""}` },
+      macd: { score: macdScore, max: 1.5, detail: `MACD Histogramm ${macdHist.length > 0 ? (macdHist[macdHist.length - 1] > 0 ? "positiv" : "negativ") : "n/a"}${macdHist.length > 0 ? (macdHist[macdHist.length - 1] > (macdHist.length > 1 ? macdHist[macdHist.length - 2] : 0) ? " + steigend" : " + fallend") : ""}` },
+      ma: { score: maScore, max: 1.5, detail: `EMA20 ${e20.toFixed(0)}, SMA50 ${sma50.toFixed(0)}${sma200 ? ", SMA200 " + sma200.toFixed(0) : ""}` },
+      volume: { score: volumeScore, max: 0.5, detail: `5d-Trend ${(vol5dTrend * 100).toFixed(0)}%, ${last5green}/5 gruen${obvRising ? ", OBV steigend" : ""}` },
+      breakout: { score: breakoutScore, max: 1, detail: `${breakoutScore > 0 ? "Nahe Hoch" : "Kein Breakout"}${bbSqueeze ? " + BB Squeeze" : ""}` },
     },
-    indicators: { rsi, sma20, sma50, sma200, price, volRatio },
+    enhanced: {
+      bonus: enhancedBonus,
+      stoch: { score: stochBonus, detail: stochOversold ? "Ueberverkauft" : stochBullish ? "Dreht auf" : "Neutral" },
+      structure: { score: structureBonus, detail: hhhl ? "HH/HL" : higherLow ? "Higher Low" : "Keine Struktur" },
+      pullback: { score: pullbackBonus, detail: `${pullbackVolDeclining ? "Vol sinkt" : ""}${confluence >= 2 ? " + Konfluenz" : ""}`.trim() || "Kein Signal" },
+      buyer: { score: buyerBonus, detail: closeNearDayHigh ? "Close nahe Tageshoch" : "Neutral" },
+      distribution: { score: distPenalty, detail: distributionPattern ? "Distribution" : heavySelling ? "Starker Abverkauf" : sellingPressure ? "Verkaufsdruck" : "Kein Signal" },
+    },
+    indicators: { rsi, e20, sma20, sma50, sma200, price, volRatio, atr },
   };
 }
