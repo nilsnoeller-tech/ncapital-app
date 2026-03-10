@@ -669,10 +669,9 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
     }
   }, [ampelResult.ampel]);
 
-  const gebundenesRisiko = portfolio.offenRisiko;
-  const verfuegbaresRisiko = Math.max(0, kontostand * (positionAdvice.riskPct / 100) - gebundenesRisiko);
-  const effektiverMaxVerlust = Math.min(userMaxVerlust, verfuegbaresRisiko);
-  const empfPositionSize = risikoProAktieEur > 0 ? Math.floor(effektiverMaxVerlust / risikoProAktieEur) : 0;
+  // Max-Verlust pro Trade (Ampel-adjustiert), unabhaengig von offenen Positionen
+  const ampelMaxVerlust = kontostand * (positionAdvice.riskPct / 100);
+  const empfPositionSize = risikoProAktieEur > 0 ? Math.floor(ampelMaxVerlust / risikoProAktieEur) : 0;
   const empfEinsatz = toEur(empfPositionSize * einstieg);
   const empfRisiko = empfPositionSize * risikoProAktieEur;
   const minCrv = ampelResult.ampel === "GRÜN" ? 1.5 : ampelResult.ampel === "ORANGE" ? 2.0 : ampelResult.ampel === "ROT" ? 3.0 : Infinity;
@@ -1225,26 +1224,7 @@ const TradeCheck = ({ portfolio, tradeList, onAddTrade, onUpdateTrade, onNavigat
               </span>
             </div>
 
-            {/* Risiko-Budget */}
-            {gebundenesRisiko > 0 && (
-              <div style={{ marginBottom: 16, padding: "10px 16px", borderRadius: 10, background: `${C.yellow}08`, border: `1px solid ${C.yellow}25` }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.yellow, marginBottom: 6 }}>Dynamisches Risiko-Budget</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                  <div>
-                    <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600 }}>Gesamt-Budget</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{fmtEur(kontostand * (positionAdvice.riskPct / 100))}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600 }}>Gebunden (offen)</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: C.orange }}>{fmtEur(gebundenesRisiko)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: C.textDim, fontWeight: 600 }}>Verfügbar</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtEur(verfuegbaresRisiko)}</div>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Max-Verlust pro Trade */}
 
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
               <div style={{ padding: "16px 14px", borderRadius: 12, background: `${positionAdvice.color}08`, border: `1px solid ${positionAdvice.color}20`, textAlign: "center" }}>
