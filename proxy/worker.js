@@ -1859,12 +1859,12 @@ function detectMarketRegime(indexCloses, sma200val, vixPrice) {
 }
 
 const REGIME_PARAMS = {
-  // BEAR_HALFRISK variant on SP250: backtested 15J CAGR 12.7%, MaxDD 13.0%, PF 1.41
+  // BEAR_HALFRISK + CRISIS_OFF on SP250: backtested 10J CAGR 14.8%, MaxDD 13.1%, PF 1.43
   STRONG_BULL:   { scoreThreshold: 6.3, maxPositions: 7, riskPct: 1.5, stopATR: 1.5, rsMax: 22, ema20Max: 2.8, sectorMax: 4 },
   MODERATE_BULL: { scoreThreshold: 6.5, maxPositions: 5, riskPct: 1.0, stopATR: 1.5, rsMax: 20, ema20Max: 2.5, sectorMax: 3 },
   TRANSITION:    { scoreThreshold: 7.0, maxPositions: 2, riskPct: 0.7, stopATR: 1.2, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
   MODERATE_BEAR: { scoreThreshold: 7.0, maxPositions: 2, riskPct: 0.5, stopATR: 1.0, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
-  CRISIS:        { scoreThreshold: 7.0, maxPositions: 1, riskPct: 0.5, stopATR: 2.0, rsMax: 15, ema20Max: 2.0, sectorMax: 1 },
+  CRISIS:        { scoreThreshold: 7.0, maxPositions: 0, riskPct: 0.5, stopATR: 2.0, rsMax: 15, ema20Max: 2.0, sectorMax: 0 },
 };
 
 // ─── Composite TA Score (Citadel-Style Analysis) ───

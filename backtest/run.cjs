@@ -194,10 +194,10 @@ const VARIANTS = {
     regimeRiskPct: { STRONG_BULL: 0.015 },
   },
 
-  // ─── BEAR_HALFRISK: Halbiertes Risiko + weniger Pos in Bear-Regimes (PRODUKTION) ───
+  // ─── BEAR_HALFRISK: Halbiertes Risiko + CRISIS OFF (PRODUKTION) ───
   "BEAR_HALFRISK": {
     ...AKTUELL_PLUS_BASE,
-    label: "HOLD30 + 1.5% Bull + 0.5% Risk in Bear",
+    label: "HOLD30 + 1.5% Bull + 0.5% Bear + CRISIS OFF",
     maxHoldingDays: 30,
     useEnhancedScore: false,
     useEnhancedFilters: false,
@@ -207,7 +207,7 @@ const VARIANTS = {
       MODERATE_BULL: { scoreThreshold: 6.5, maxPositions: 5, rsMax: 20, ema20Max: 2.5 },
       TRANSITION:    { scoreThreshold: 7.0, maxPositions: 2, rsMax: 15, ema20Max: 2.0 },
       MODERATE_BEAR: { scoreThreshold: 7.0, maxPositions: 2, rsMax: 15, ema20Max: 2.0 },
-      CRISIS:        { scoreThreshold: 7.0, maxPositions: 1, rsMax: 15, ema20Max: 2.0 },
+      CRISIS:        { scoreThreshold: 7.0, maxPositions: 0, rsMax: 15, ema20Max: 2.0 },
     },
   },
 

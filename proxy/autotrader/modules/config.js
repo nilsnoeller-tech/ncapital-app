@@ -1,5 +1,5 @@
-// Default trading configuration — matches backtested BEAR_HALFRISK on SP250
-// 15J CAGR 12.7%, MaxDD 13.0%, PF 1.41, 2381 Trades
+// Default trading configuration — matches backtested BEAR_HALFRISK + CRISIS_OFF on SP250
+// 10J CAGR 14.8%, MaxDD 13.1%, PF 1.43
 
 export const DEFAULT_CONFIG = {
   mode: "CONFIRMATION",       // "CONFIRMATION" | "FULL_AUTO"
@@ -18,7 +18,7 @@ export const DEFAULT_CONFIG = {
     MODERATE_BULL: { scoreMin: 6.5, maxPos: 5, riskPct: 0.010 },
     TRANSITION:    { scoreMin: 7.0, maxPos: 2, riskPct: 0.007 },
     MODERATE_BEAR: { scoreMin: 7.0, maxPos: 2, riskPct: 0.005 },
-    CRISIS:        { scoreMin: 7.0, maxPos: 1, riskPct: 0.005 },
+    CRISIS:        { scoreMin: 7.0, maxPos: 0, riskPct: 0.005 },
   },
 };
 
