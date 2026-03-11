@@ -1,12 +1,12 @@
 // ─── N-Capital Market Data Proxy + Full Index Scanner (Cloudflare Worker) ───
 // Routes: /api/chart, /api/batch, /api/push/*, /api/scan/*, /api/briefing/*
-// Cron: Chunked scan of S&P 500 + DAX 40 (alle 5 Min ein Chunk, voller Scan ~45 Min)
+// Cron: Chunked scan of S&P 250 (alle 2 Min ein Chunk, voller Scan ~22 Min)
 // KV-Optimized: accumulator pattern — scan:live holds state+results (1R+1W per invocation)
 // Deployment: cd proxy && npx wrangler deploy
 
 import { buildPushHTTPRequest } from "@pushforge/builder";
 
-// ─── S&P 500 Symbols (~507 Aktien) ───
+// ─── S&P 250 Symbols (Top 250 US Large/Mid Caps) ───
 
 // S&P 100 (OEX) — Top 100 US Large Caps by Market Cap
 const SP100_SYMBOLS = [
@@ -34,21 +34,36 @@ const SP100_SYMBOLS = [
   "WFC","WMT","XOM",
 ];
 
-// ─── DAX 40 Symbols (Yahoo Finance .DE Suffix) ───
-
-const DAX40_SYMBOLS = [
-  "ADS.DE","AIR.DE","ALV.DE","BAS.DE","BAYN.DE","BEI.DE","BMW.DE","BNR.DE","CBK.DE","CON.DE",
-  "DB1.DE","DBK.DE","DHL.DE","DTE.DE","DTG.DE","ENR.DE","FRE.DE","G1A.DE","HEI.DE",
-  "HEN3.DE","HNR1.DE","IFX.DE","MBG.DE","MRK.DE","MTX.DE","MUV2.DE","P911.DE","PAH3.DE","PUM.DE",
-  "QIA.DE","RHM.DE","RWE.DE","SAP.DE","SHL.DE","SIE.DE","SRT3.DE","VOW3.DE","ZAL.DE",
+// S&P 250 extra (ranks ~101-250, NOT in SP100)
+const SP250_EXTRA = [
+  "A","ABNB","ADI","ADM","ADP","ADSK","AEE","AEP","AFL","AJG","ALL","AMAT","AMP","ANSS","AON",
+  "APD","APH","ARE","ATO","AWK","AZO","BA","BAX","BBY","BDX","BIIB","BR","BRO","BSX",
+  "CARR","CB","CDNS","CDW","CE","CF","CHD","CI","CL","CLX","CME","CMG","CMI","CNC",
+  "CPRT","CTAS","CTSH","CTVA","D","DAL","DD","DXCM","DG","DLTR","DOV","DOW","DPZ","DRI",
+  "DVN","EA","EBAY","ECL","ED","EFX","EIX","EL","EOG","EQIX","EQR","ES","ETN","ETR","EW",
+  "EXPE","F","FANG","FAST","FCX","FDX","FIS","FISV","FITB","FTV",
+  "GRMN","GIS","GLW","GPC","GPN","GWW","HAL","HCA","HSY","HUM",
+  "ICE","IDXX","IFF","ILMN","INCY","IP","IQV","IR","IRM","IT","ITW",
+  "J","JBHT","JCI","K","KDP","KEY","KEYS","KHC","KLAC","KMB","KR",
+  "LDOS","LEN","LH","LHX","LRCX","LUV","LYB",
+  "MAR","MAS","MCHP","MCK","MCO","MNST","MPWR","MKTX","MLM","MOS","MPC","MRNA","MRVL","MSCI","MSI","MTB","MU",
+  "NDAQ","NEM","NOC","NSC","NTRS","NUE",
+  "O","ODFL","OKE","OMC","ON","ORLY","OTIS",
+  "PAYX","PCAR","PH","PHM","PKG","PLD","PNC","POOL","PPG","PPL","PRU","PSA","PSX","PTC","PWR",
+  "RCL","REGN","RF","RJF","RMD","ROK","ROP","ROST","RSG",
+  "SBAC","SHW","SJM","SNPS","SRE","STT","STX","STZ","SWK","SWKS","SYF","SYK","SYY",
+  "TDG","TDY","TEL","TER","TFC","TROW","TRV","TSCO","TSN","TT","TTWO","TXT","TYL",
+  "URI","VICI","VLO","VMC","VRSK","VRSN","VRTX","VTR",
+  "WAB","WAT","WBA","WEC","WELL","WM","WRB","WST","WTW","WY","WYNN",
+  "XEL","XYL","YUM","ZBH","ZBRA","ZTS",
 ];
 
-const ALL_INDEX_SYMBOLS = [...SP100_SYMBOLS, ...DAX40_SYMBOLS];
+const ALL_INDEX_SYMBOLS = [...SP100_SYMBOLS, ...SP250_EXTRA];
 
 // ─── Macro Symbols for Market Briefing ───
 
 const MACRO_SYMBOLS = {
-  indices:     [{ symbol: "^GSPC", name: "S&P 500" }, { symbol: "^GDAXI", name: "DAX" }, { symbol: "^DJI", name: "Dow Jones" }, { symbol: "^IXIC", name: "Nasdaq" }],
+  indices:     [{ symbol: "^GSPC", name: "S&P 500" }, { symbol: "^DJI", name: "Dow Jones" }, { symbol: "^IXIC", name: "Nasdaq" }],
   asia:        [{ symbol: "^N225", name: "Nikkei 225" }, { symbol: "^HSI", name: "Hang Seng" }, { symbol: "000001.SS", name: "Shanghai Comp." }],
   volatility:  [{ symbol: "^VIX", name: "VIX" }],
   bonds:       [{ symbol: "^TNX", name: "US 10Y Yield" }],
@@ -58,22 +73,6 @@ const MACRO_SYMBOLS = {
   futures:     [{ symbol: "ES=F", name: "S&P Futures" }, { symbol: "NQ=F", name: "Nasdaq Futures" }],
 };
 const ALL_MACRO_SYMBOLS = Object.values(MACRO_SYMBOLS).flat().map(m => m.symbol);
-
-// ─── DAX Sector Mapping ───
-
-const DAX_SECTORS = {
-  "Technologie": ["SAP","IFX"],
-  "Automobil": ["MBG","BMW","VOW3","PAH3","P911","CON"],
-  "Finanzen": ["ALV","DBK","CBK","MUV2","DB1"],
-  "Industrie": ["SIE","AIR","MTX","DHL"],
-  "Ruestung": ["RHM"],
-  "Chemie/Pharma": ["BAS","BAYN","MRK","FRE","SHL"],
-  "Energie": ["RWE","ENR"],
-  "Konsum": ["ADS","PUM","BEI","HEN3","ZAL"],
-  "Telekom": ["DTE","SRT3"],
-  "Bau": ["HEI"],
-  "Immobilien": ["QIA"],
-};
 
 // ─── US Sector Mapping (Top-Aktien) ───
 
@@ -93,18 +92,18 @@ const US_SECTORS = {
 // ─── Seasonal Data (Hardcoded Historical Averages) ───
 
 const MONTHLY_SEASONALITY = {
-  1:  { sp500: +1.2, dax: +1.5, note: "Januar-Effekt: Small Caps oft stark" },
-  2:  { sp500: -0.1, dax: +0.3, note: "Historisch schwacher Monat, oft Korrektur nach Januar-Rally" },
-  3:  { sp500: +1.0, dax: +1.8, note: "Quartalsende Window-Dressing, Fonds schichten um" },
-  4:  { sp500: +1.5, dax: +2.1, note: "Staerkster Monat historisch, Earnings Season beginnt" },
-  5:  { sp500: +0.2, dax: -0.3, note: "Sell in May — ab Mai historisch schwaechere Phase" },
-  6:  { sp500: +0.1, dax: -0.5, note: "Sommerliche Seitwaertsbewegung beginnt" },
-  7:  { sp500: +1.0, dax: +0.8, note: "Sommererholung, Q2-Earnings" },
-  8:  { sp500: -0.2, dax: -1.0, note: "Schwaechster Monat fuer DAX, duennes Volumen" },
-  9:  { sp500: -0.5, dax: -1.2, note: "September-Effekt: Historisch schwaechster US-Monat" },
-  10: { sp500: +0.9, dax: +1.2, note: "Oktober-Reversal historisch stark" },
-  11: { sp500: +1.5, dax: +2.0, note: "Jahresendrally beginnt" },
-  12: { sp500: +1.3, dax: +1.8, note: "Santa Rally: letzte 5 Handelstage + erste 2 Januar" },
+  1:  { sp500: +1.2, note: "Januar-Effekt: Small Caps oft stark" },
+  2:  { sp500: -0.1, note: "Historisch schwacher Monat, oft Korrektur nach Januar-Rally" },
+  3:  { sp500: +1.0, note: "Quartalsende Window-Dressing, Fonds schichten um" },
+  4:  { sp500: +1.5, note: "Staerkster Monat historisch, Earnings Season beginnt" },
+  5:  { sp500: +0.2, note: "Sell in May — ab Mai historisch schwaechere Phase" },
+  6:  { sp500: +0.1, note: "Sommerliche Seitwaertsbewegung beginnt" },
+  7:  { sp500: +1.0, note: "Sommererholung, Q2-Earnings" },
+  8:  { sp500: -0.2, note: "Sommer-Seitwaertsbewegung, duennes Volumen" },
+  9:  { sp500: -0.5, note: "September-Effekt: Historisch schwaechster US-Monat" },
+  10: { sp500: +0.9, note: "Oktober-Reversal historisch stark" },
+  11: { sp500: +1.5, note: "Jahresendrally beginnt" },
+  12: { sp500: +1.3, note: "Santa Rally: letzte 5 Handelstage + erste 2 Januar" },
 };
 
 // US Presidential Cycle: year % 4 → 0=Election, 1=Post-Election, 2=Midterm, 3=Pre-Election
@@ -137,7 +136,7 @@ const RECURRING_EVENTS_2026 = [
   { month: 11, day: 19, name: "FOMC-Protokoll", type: "minutes", impact: "medium", impactScore: 2, description: "Protokoll der Oktober-Sitzung." },
 
   // ── EZB-Zinsentscheide (8x/Jahr) ──
-  { month: 1, day: 30, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB. Direkte Auswirkung auf DAX und EUR/USD." },
+  { month: 1, day: 30, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB. Auswirkung auf EUR/USD und europaeische Maerkte." },
   { month: 3, day: 6, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "EZB-Zinsentscheid mit neuen Stabsprojektionen." },
   { month: 4, day: 17, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "Zinsentscheidung der EZB." },
   { month: 6, day: 5, name: "EZB-Zinsentscheid", type: "ecb", impact: "high", impactScore: 3, description: "EZB-Zinsentscheid mit aktualisierten Projektionen." },
@@ -506,23 +505,19 @@ async function fetchMarketNews(env, scannerPicks) {
   // Known scanner/universe symbols for relevance matching
   const allKnownSymbols = new Set([
     ...Object.values(US_SECTORS).flat(),
-    ...Object.values(DAX_SECTORS).flat().map(s => s + ".DE"),
   ]);
 
-  // Fetch general market news (2 subrequests)
-  const [usNews, euNews] = await Promise.all([
-    fetchYahooSearch("stock market earnings", 15),
-    fetchYahooSearch("DAX Aktien Boerse", 10),
-  ]);
-  console.log(`[News] Fetched US: ${usNews.length}, EU: ${euNews.length} articles`);
+  // Fetch general market news
+  const usNews = await fetchYahooSearch("stock market earnings", 20);
+  console.log(`[News] Fetched US: ${usNews.length} articles`);
 
   // Fetch news for top scanner picks (up to 5 subrequests)
-  const pickSymbols = (scannerPicks || []).slice(0, 5).map(p => p.displaySymbol || p.symbol?.replace(".DE", ""));
+  const pickSymbols = (scannerPicks || []).slice(0, 5).map(p => p.displaySymbol || p.symbol);
   console.log(`[News] Scanner picks for news: ${pickSymbols.join(", ") || "none"}`);
   const pickNewsArrays = await Promise.all(pickSymbols.map(sym => fetchYahooSearch(sym, 3)));
 
   // Merge and deduplicate by UUID
-  const allRaw = [...usNews, ...euNews, ...pickNewsArrays.flat()];
+  const allRaw = [...usNews, ...pickNewsArrays.flat()];
   const seen = new Set();
   const deduped = allRaw.filter(n => {
     const key = n.uuid || n.title;
@@ -539,7 +534,7 @@ async function fetchMarketNews(env, scannerPicks) {
     const sentiment = analyzeSentiment(n.title);
     const relatedSymbols = (n.relatedTickers || []).map(t => t.toUpperCase());
     const isScanner = relatedSymbols.some(s => scannerSet.has(s));
-    const isUniverse = relatedSymbols.some(s => allKnownSymbols.has(s) || allKnownSymbols.has(s + ".DE"));
+    const isUniverse = relatedSymbols.some(s => allKnownSymbols.has(s));
     const ageHours = n.providerPublishTime ? (now / 1000 - n.providerPublishTime) / 3600 : 48;
     const recencyScore = Math.max(0, 5 - ageHours * 0.2);
     const symbolScore = isScanner ? 3 : isUniverse ? 2 : relatedSymbols.length > 0 ? 1 : 0;
@@ -1804,7 +1799,7 @@ function computeMeanReversionScore(candles) {
   else if (ind.volRatio >= 1.5 && ind.lastIsRed) volClimaxScore = 0.7;
   else if (ind.pullbackVolDeclining) volClimaxScore = 0.5;
 
-  // 5. Quality Filter (max 2.0) — always >= 1.0 since we scan SP100/DAX40
+  // 5. Quality Filter (max 2.0) — always >= 1.0 since we scan SP100
   let qualityScore = 1.0;
   if (sma200 && price > sma200 * 0.85) qualityScore = 2.0;
   else if (sma200 && price > sma200 * 0.75) qualityScore = 1.5;
@@ -1852,20 +1847,23 @@ function detectMarketRegime(indexCloses, sma200val, vixPrice) {
     ? (sma50val - sma50Arr[sma50Arr.length - 20]) / sma50Arr[sma50Arr.length - 20] * 100
     : 0;
 
+  const distToSMA200 = Math.abs(price - sma200val) / sma200val;
+
   if (price > sma200val && sma50val > sma200val && sma50slope > 0.3 && vixPrice < 20) return "STRONG_BULL";
   if (price > sma200val && vixPrice < 25) return "MODERATE_BULL";
-  if (Math.abs(price - sma200val) / sma200val < 0.03 && vixPrice >= 18) return "TRANSITION";
+  // TRANSITION: Kurs nahe SMA200 (±5%) — unabhaengig vom VIX
+  if (distToSMA200 < 0.05) return "TRANSITION";
   if (price < sma200val && vixPrice < 30) return "MODERATE_BEAR";
-  return "CRISIS"; // price < SMA200 && VIX >= 30
+  return "CRISIS"; // price deutlich < SMA200 && VIX >= 30
 }
 
 const REGIME_PARAMS = {
-  // AKTUELL+ variant: backtested 10J CAGR 9.4%, PF 1.32, 1211 trades
-  STRONG_BULL:   { scoreThreshold: 6.3, maxPositions: 7, riskPct: 1.2, stopATR: 1.5, rsMax: 22, ema20Max: 2.8, sectorMax: 4 },
+  // BEAR_HALFRISK variant on SP250: backtested 15J CAGR 12.7%, MaxDD 13.0%, PF 1.41
+  STRONG_BULL:   { scoreThreshold: 6.3, maxPositions: 7, riskPct: 1.5, stopATR: 1.5, rsMax: 22, ema20Max: 2.8, sectorMax: 4 },
   MODERATE_BULL: { scoreThreshold: 6.5, maxPositions: 5, riskPct: 1.0, stopATR: 1.5, rsMax: 20, ema20Max: 2.5, sectorMax: 3 },
-  TRANSITION:    { scoreThreshold: 7.0, maxPositions: 3, riskPct: 0.7, stopATR: 1.2, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
-  MODERATE_BEAR: { scoreThreshold: 5.5, maxPositions: 3, riskPct: 0.5, stopATR: 1.0, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
-  CRISIS:        { scoreThreshold: 6.0, maxPositions: 2, riskPct: 0.5, stopATR: 2.0, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
+  TRANSITION:    { scoreThreshold: 7.0, maxPositions: 2, riskPct: 0.7, stopATR: 1.2, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
+  MODERATE_BEAR: { scoreThreshold: 7.0, maxPositions: 2, riskPct: 0.5, stopATR: 1.0, rsMax: 15, ema20Max: 2.0, sectorMax: 2 },
+  CRISIS:        { scoreThreshold: 7.0, maxPositions: 1, riskPct: 0.5, stopATR: 2.0, rsMax: 15, ema20Max: 2.0, sectorMax: 1 },
 };
 
 // ─── Composite TA Score (Citadel-Style Analysis) ───
@@ -2306,8 +2304,7 @@ async function scanSymbolServer(symbol) {
     ? Math.round(((price - closes[closes.length - 20]) / closes[closes.length - 20]) * 10000) / 100
     : 0;
 
-  // Display symbol: remove .DE suffix
-  const displaySymbol = symbol.replace(/\.DE$/i, "");
+  const displaySymbol = symbol;
 
   return {
     symbol,
@@ -2419,23 +2416,21 @@ async function sendTelegramMessages(messages, env) {
   return sent;
 }
 
-// ─── Time-Based Symbol Selection ───
-// DAX 40:   09:00–19:00 UTC (10:00–20:00 CET)
-// S&P 500:  14:00–22:00 UTC (15:00–23:00 CET)
-// Overlap:  14:00–19:00 UTC → both markets
+// ─── Time-Based Symbol Selection (DST-aware) ───
+// NYSE/NASDAQ:   9:30–16:00 ET (America/New_York)
+// Uses Intl.DateTimeFormat for automatic DST handling
 
 function getActiveSymbols() {
   const now = new Date();
-  const utcHour = now.getUTCHours();
-  const utcMinute = now.getUTCMinutes();
-  const timeDecimal = utcHour + utcMinute / 60;
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return { symbols: [], mode: "closed" };
 
-  const daxActive = timeDecimal >= 9 && timeDecimal < 19;     // 09:00–18:59 UTC
-  const spActive  = timeDecimal >= 14 && timeDecimal < 22;    // 14:00–21:59 UTC
+  const etH = parseInt(new Intl.DateTimeFormat("en", { hour: "numeric", hour12: false, timeZone: "America/New_York" }).format(now));
+  const etM = parseInt(new Intl.DateTimeFormat("en", { minute: "numeric", timeZone: "America/New_York" }).format(now));
+  const etTime = etH * 60 + etM; // Minutes since midnight ET
 
-  if (daxActive && spActive) return { symbols: [...SP100_SYMBOLS, ...DAX40_SYMBOLS], mode: "both" };
-  if (daxActive)             return { symbols: [...DAX40_SYMBOLS], mode: "dax-only" };
-  if (spActive)              return { symbols: [...SP100_SYMBOLS], mode: "sp100-only" };
+  // NYSE: 9:30 (570) – 16:00 (960) ET + 30min buffer after close
+  if (etTime >= 570 && etTime < 990) return { symbols: [...SP100_SYMBOLS], mode: "us" };
   return { symbols: [], mode: "closed" };
 }
 
@@ -2445,8 +2440,8 @@ function getActiveSymbols() {
 
 function errorResult(sym, errMsg) {
   return {
-    symbol: sym, displaySymbol: sym.replace(/\.DE$/i, ""), name: sym,
-    currency: sym.endsWith(".DE") ? "EUR" : "USD", price: 0, change: 0,
+    symbol: sym, displaySymbol: sym, name: sym,
+    currency: "USD", price: 0, change: 0,
     atr: 0, ema20Distance: null, perf20d: null, relStrengthVsIndex: null,
     swing: { total: 0, factors: [], signals: [], error: errMsg },
     intraday: { total: 0, factors: [], signals: [], error: errMsg },
@@ -2477,7 +2472,7 @@ async function runChunkedScan(env) {
     results: [], lastRun: null, lastFullScan: null,
   };
 
-  // 4. Handle mode transition (e.g. dax-only → both at 14:00 UTC)
+  // 4. Handle mode transition (e.g. closed → us)
   let pointer = live.pointer;
 
   if (live.mode !== null && live.mode !== currentMode) {
@@ -2559,6 +2554,9 @@ async function runChunkedScan(env) {
     live.pointer = 0;
     live.results = [];
     live.lastFullScan = new Date().toISOString();
+
+    // Earnings calendar: update once daily (after first full scan of the day)
+    await updateEarningsCalendarIfNeeded(env, activeSymbols);
   } else {
     live.pointer = nextPointer;
   }
@@ -2570,18 +2568,82 @@ async function runChunkedScan(env) {
   return { chunk: pointer + 1, totalChunks, scanned: results.length, mode: currentMode };
 }
 
-async function processAndNotify(env, config, allResults) {
-  // ── Fetch index data + VIX for relative strength + market regime (3 subrequests) ──
-  let gspcReturn = 0, gdaxiReturn = 0;
-  let gspcAboveSMA200 = true, gdaxiAboveSMA200 = true; // Default true (graceful degradation)
-  let vixPrice = 15; // Default moderate VIX
-  let usRegime = "MODERATE_BULL", daxRegime = "MODERATE_BULL"; // Default regimes
-  let gspcCloses = [], gdaxiCloses = [];
-  let gspcSMA200 = null, gdaxiSMA200 = null;
+// ── Earnings Calendar — scrape Finviz once daily, store in KV ──
+
+async function updateEarningsCalendarIfNeeded(env, activeSymbols) {
   try {
-    const [gspcJson, gdaxiJson, vixJson] = await Promise.all([
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const existing = await env.NCAPITAL_KV.get("scan:earnings-calendar", "json");
+    if (existing?.date === todayStr) return; // Already updated today
+
+    console.log(`[Earnings] Updating earnings calendar for ${activeSymbols.length} symbols...`);
+    const calendar = {};
+    const months = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
+
+    // Scrape Finviz in batches of 5 (respect subrequest limits)
+    const usSymbols = activeSymbols;
+    for (let i = 0; i < usSymbols.length; i += 5) {
+      const batch = usSymbols.slice(i, i + 5);
+      const results = await Promise.all(batch.map(async (sym) => {
+        try {
+          const res = await fetch(`https://finviz.com/quote.ashx?t=${encodeURIComponent(sym)}`, {
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; ncapital/1.0)" },
+          });
+          if (!res.ok) return null;
+          const html = await res.text();
+          // Pattern: Earnings</a></td><td...><a...><b><small...>Mar 12 AMC</small></b></a></td>
+          const m = html.match(/Earnings<\/a><\/td><td[^>]*><a[^>]*><b><small[^>]*>([^<]+)<\/small>/);
+          if (!m) return null;
+          const parts = m[1].trim().split(/\s+/);
+          if (parts.length < 2) return null;
+          const monthNum = months[parts[0]];
+          const day = parseInt(parts[1]);
+          const timing = parts[2] || ""; // AMC/BMO
+          if (!monthNum || !day) return null;
+          const now = new Date();
+          const currentMonth = now.getMonth() + 1;
+          const currentDay = now.getDate();
+          // Finviz shows last or next earnings date
+          // If month is before current month, it could be past (this year) or future (next year)
+          let year = now.getFullYear();
+          const candidateDate = new Date(year, monthNum - 1, day);
+          // If date is more than 60 days in the past, assume next occurrence is +1 year
+          const diffDays = (candidateDate - now) / (1000 * 60 * 60 * 24);
+          if (diffDays < -60) year++;
+          const earningsDate = `${year}-${String(monthNum).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          return { symbol: sym, earningsDate, timing };
+        } catch { return null; }
+      }));
+      for (const r of results) {
+        if (r) calendar[r.symbol] = { date: r.earningsDate, timing: r.timing };
+      }
+    }
+
+    const count = Object.keys(calendar).length;
+    console.log(`[Earnings] Scraped ${count}/${usSymbols.length} earnings dates`);
+
+    await env.NCAPITAL_KV.put("scan:earnings-calendar", JSON.stringify({
+      date: todayStr,
+      calendar,
+      count,
+      updatedAt: new Date().toISOString(),
+    }), { expirationTtl: 172800 }); // 2 days
+  } catch (e) {
+    console.log(`[Earnings] Error updating calendar: ${e.message}`);
+  }
+}
+
+async function processAndNotify(env, config, allResults) {
+  // ── Fetch S&P 500 + VIX for relative strength + market regime (2 subrequests) ──
+  let gspcReturn = 0;
+  let gspcAboveSMA200 = true; // Default true (graceful degradation)
+  let vixPrice = 15; // Default moderate VIX
+  let usRegime = "MODERATE_BULL"; // Default regime
+  let gspcCloses = [];
+  let gspcSMA200 = null;
+  try {
+    const [gspcJson, vixJson] = await Promise.all([
       fetchYahooJSON("^GSPC", { range: "2y", interval: "1d" }, 10000, true),
-      fetchYahooJSON("^GDAXI", { range: "2y", interval: "1d" }, 10000, true),
       fetchYahooJSON("^VIX", { range: "5d", interval: "1d" }, 10000, true),
     ]);
 
@@ -2591,59 +2653,40 @@ async function processAndNotify(env, config, allResults) {
       vixPrice = vixParsed.candles[vixParsed.candles.length - 1].close;
     }
 
-    for (const [sym, json] of [["^GSPC", gspcJson], ["^GDAXI", gdaxiJson]]) {
-      const parsed = !json.error ? parseYahooCandles(json) : null;
-      if (parsed && parsed.candles.length >= 20) {
-        const c = parsed.candles.map(x => x.close);
-        const ret = ((c[c.length - 1] - c[c.length - 20]) / c[c.length - 20]) * 100;
-        // SMA200 for market regime filter (with hysteresis)
-        const sma200 = c.length >= 200
-          ? c.slice(c.length - 200).reduce((s, v) => s + v, 0) / 200
-          : null;
-        // Hysteresis buffer: OFF when < SMA200 * 0.985, ON when > SMA200 * 1.01
-        let aboveSMA200 = true;
-        if (sma200) {
-          const currentPrice = c[c.length - 1];
-          if (currentPrice < sma200 * 0.985) aboveSMA200 = false;        // clearly below
-          else if (currentPrice > sma200 * 1.01) aboveSMA200 = true;      // clearly above
-          // else: in the middle zone, keep default true (benefit of the doubt)
-        }
-        if (sym === "^GSPC") {
-          gspcReturn = Math.round(ret * 100) / 100;
-          gspcAboveSMA200 = aboveSMA200;
-          gspcCloses = c;
-          gspcSMA200 = sma200;
-        } else {
-          gdaxiReturn = Math.round(ret * 100) / 100;
-          gdaxiAboveSMA200 = aboveSMA200;
-          gdaxiCloses = c;
-          gdaxiSMA200 = sma200;
-        }
+    const gspcParsed = !gspcJson.error ? parseYahooCandles(gspcJson) : null;
+    if (gspcParsed && gspcParsed.candles.length >= 20) {
+      const c = gspcParsed.candles.map(x => x.close);
+      const ret = ((c[c.length - 1] - c[c.length - 20]) / c[c.length - 20]) * 100;
+      const sma200 = c.length >= 200
+        ? c.slice(c.length - 200).reduce((s, v) => s + v, 0) / 200
+        : null;
+      let aboveSMA200 = true;
+      if (sma200) {
+        const currentPrice = c[c.length - 1];
+        if (currentPrice < sma200 * 0.985) aboveSMA200 = false;
+        else if (currentPrice > sma200 * 1.01) aboveSMA200 = true;
       }
+      gspcReturn = Math.round(ret * 100) / 100;
+      gspcAboveSMA200 = aboveSMA200;
+      gspcCloses = c;
+      gspcSMA200 = sma200;
     }
 
-    // Detect market regime for each index
     if (gspcCloses.length > 0 && gspcSMA200) {
       usRegime = detectMarketRegime(gspcCloses, gspcSMA200, vixPrice);
     }
-    if (gdaxiCloses.length > 0 && gdaxiSMA200) {
-      daxRegime = detectMarketRegime(gdaxiCloses, gdaxiSMA200, vixPrice);
-    }
 
-    console.log(`[Scan] Index 20d returns: S&P ${gspcReturn}%, DAX ${gdaxiReturn}% | VIX: ${vixPrice.toFixed(1)} | Regime: S&P ${usRegime}, DAX ${daxRegime}`);
+    console.log(`[Scan] S&P 20d return: ${gspcReturn}% | VIX: ${vixPrice.toFixed(1)} | Regime: ${usRegime}`);
   } catch (e) {
     console.log(`[Scan] Index returns fetch failed: ${e.message}`);
   }
 
-  // Regime-dependent parameters (use the more conservative regime)
-  const effectiveRegime = REGIME_PARAMS[usRegime] && REGIME_PARAMS[daxRegime]
-    ? (REGIME_PARAMS[usRegime].scoreThreshold >= REGIME_PARAMS[daxRegime].scoreThreshold ? usRegime : daxRegime)
-    : usRegime;
+  const effectiveRegime = usRegime;
   const regimeParams = REGIME_PARAMS[effectiveRegime] || REGIME_PARAMS.MODERATE_BULL;
 
   // Enrich all results with relative strength vs index
   for (const r of allResults) {
-    const benchReturn = r.symbol.endsWith(".DE") ? gdaxiReturn : gspcReturn;
+    const benchReturn = gspcReturn;
     r.relStrengthVsIndex = r.perf20d != null
       ? Math.round((r.perf20d - benchReturn) * 100) / 100
       : null;
@@ -2662,9 +2705,7 @@ async function processAndNotify(env, config, allResults) {
     .filter((r) => r.swing.total >= threshold)
     .sort((a, b) => b.swing.total - a.swing.total);
 
-  // Compute market breadth per index
-  const daxAll = allResults.filter(r => r.symbol.endsWith(".DE"));
-  const spAll = allResults.filter(r => !r.symbol.endsWith(".DE"));
+  // Compute market breadth
   const breadth = (arr) => {
     const pos = arr.filter(r => r.change > 0).length;
     const neg = arr.filter(r => r.change < 0).length;
@@ -2688,8 +2729,7 @@ async function processAndNotify(env, config, allResults) {
   const commonFiltered = unfilteredPicks
     .filter((r) => {
       // Market Regime: soft SMA200 filter with individual strength bypass
-      const isDE = r.symbol.endsWith(".DE");
-      const indexAboveSMA200 = isDE ? gdaxiAboveSMA200 : gspcAboveSMA200;
+      const indexAboveSMA200 = gspcAboveSMA200;
       if (!indexAboveSMA200) {
         const stockSMA200 = r.composite?.indicators?.sma200;
         const stockAboveOwnSMA200 = stockSMA200 ? r.price > stockSMA200 : false;
@@ -2700,7 +2740,9 @@ async function processAndNotify(env, config, allResults) {
         if (!(stockAboveOwnSMA200 && hasPositiveRS && hasStrongTrend && hasHighScore)) return false;
         r._bypassedSMA200 = true;
       }
-      if (r.relStrengthVsIndex != null && (r.relStrengthVsIndex <= 0 || r.relStrengthVsIndex > regimeParams.rsMax)) return false;
+      // RS-Filter: in Crisis/Transition/Moderate_Bear erlaubt RS >= -5 (Turnaround-Finder)
+      const rsMin = ["CRISIS", "MODERATE_BEAR", "TRANSITION"].includes(effectiveRegime) ? -5 : 0;
+      if (r.relStrengthVsIndex != null && (r.relStrengthVsIndex < rsMin || r.relStrengthVsIndex > regimeParams.rsMax)) return false;
       if (r.ema20Distance != null && Math.abs(r.ema20Distance) > regimeParams.ema20Max) return false;
       if (r.composite?.indicators?.adx != null && r.composite.indicators.adx < 20) return false;
       if (r.composite?.indicators?.rsi != null && r.composite.indicators.rsi >= 75) return false;
@@ -2746,9 +2788,8 @@ async function processAndNotify(env, config, allResults) {
   const sectorPickCount = {};
   const taPicks = [];
   for (const r of taPicksFiltered) {
-    const sym = r.displaySymbol || r.symbol.replace(/\.DE$/i, "");
-    const isDE = r.symbol.endsWith(".DE");
-    const sMap = isDE ? DAX_SECTORS : US_SECTORS;
+    const sym = r.displaySymbol || r.symbol;
+    const sMap = US_SECTORS;
     let sector = "Other";
     for (const [s, syms] of Object.entries(sMap)) {
       if (syms.includes(sym)) { sector = s; break; }
@@ -2760,7 +2801,7 @@ async function processAndNotify(env, config, allResults) {
 
   // ── Mean-Reversion Picks (only in TRANSITION / MODERATE_BEAR / CRISIS) ──
   let mrPicks = [];
-  if (["TRANSITION", "MODERATE_BEAR", "CRISIS"].includes(usRegime) || ["TRANSITION", "MODERATE_BEAR", "CRISIS"].includes(daxRegime)) {
+  if (["TRANSITION", "MODERATE_BEAR", "CRISIS"].includes(usRegime)) {
     mrPicks = allResults
       .filter(r => r.mr && r.mr.direction === "LONG_MR" && r.mr.mrScore >= 5.0 && r.mr.tradePlan)
       .sort((a, b) => b.mr.mrScore - a.mr.mrScore)
@@ -2784,22 +2825,14 @@ async function processAndNotify(env, config, allResults) {
     movers: movers.length,
     errors: allResults.filter((r) => r.swing.error || r.intraday.error).length,
     timestamp: new Date().toISOString(),
-    breadth: { dax: breadth(daxAll), sp100: breadth(spAll) },
-    marketRegime: { sp500: usRegime, dax: daxRegime, vix: Math.round(vixPrice * 10) / 10 },
+    breadth: { sp100: breadth(allResults) },
+    marketRegime: { sp500: usRegime, vix: Math.round(vixPrice * 10) / 10 },
   };
-
-  // ── Market-Merge: prevent sp100-only scan from erasing DAX picks (and vice versa) ──
-  const hasDE = allResults.some((r) => r.symbol.endsWith(".DE"));
-  const hasUS = allResults.some((r) => !r.symbol.endsWith(".DE"));
-  const scanScope = hasDE && hasUS ? "both" : hasDE ? "dax-only" : "sp100-only";
 
   // ── Sector lookup + avg change per sector (informational, no scoring) ──
   const sectorMap = {};
   for (const [sector, syms] of Object.entries(US_SECTORS)) {
     for (const s of syms) sectorMap[s] = sector;
-  }
-  for (const [sector, syms] of Object.entries(DAX_SECTORS)) {
-    for (const s of syms) sectorMap[s + ".DE"] = sector;
   }
   // Calculate average change per sector from allResults
   const sectorChanges = {};
@@ -2841,73 +2874,23 @@ async function processAndNotify(env, config, allResults) {
   }));
   const currentHitsMapped = filtered;
 
-  let kvPicks = [...currentPicksMapped];
-  let kvMovers = [...currentMoversMapped];
-  let kvHits = [...currentHitsMapped];
-  let kvMrPicks = [...currentMrPicksMapped];
-  let mergedBreadth = { ...stats.breadth };
-
-  if (scanScope !== "both") {
-    try {
-      const [existingTA, existingScan] = await Promise.all([
-        env.NCAPITAL_KV.get("scan:ta-picks", "json"),
-        env.NCAPITAL_KV.get("scan:results", "json"),
-      ]);
-      const isDE = (sym) => sym?.endsWith?.(".DE");
-      const keepFilter = scanScope === "sp100-only" ? isDE : (sym) => !isDE(sym);
-
-      if (existingTA?.picks) {
-        const kept = existingTA.picks.filter((p) => keepFilter(p.symbol));
-        kvPicks.push(...kept);
-        console.log(`[Scan] Market-Merge: kept ${kept.length} ${scanScope === "sp100-only" ? "DE" : "US"} picks from previous scan`);
-      }
-      if (existingTA?.movers) {
-        const kept = existingTA.movers.filter((m) => keepFilter(m.symbol));
-        kvMovers.push(...kept);
-      }
-      if (existingTA?.mrPicks) {
-        const kept = existingTA.mrPicks.filter((m) => keepFilter(m.symbol));
-        kvMrPicks.push(...kept);
-      }
-      if (existingScan?.hits) {
-        const kept = existingScan.hits.filter((h) => keepFilter(h.symbol));
-        kvHits.push(...kept);
-      }
-      // Preserve breadth from the other market
-      if (scanScope === "sp100-only" && existingScan?.stats?.breadth?.dax) {
-        mergedBreadth.dax = existingScan.stats.breadth.dax;
-      }
-      if (scanScope === "dax-only" && existingScan?.stats?.breadth?.sp100) {
-        mergedBreadth.sp100 = existingScan.stats.breadth.sp100;
-      }
-    } catch (e) {
-      console.log(`[Scan] Market-Merge skipped: ${e.message}`);
-    }
-  }
-
-  // Deduplicate by symbol (current scan takes priority)
-  const dedup = (arr, key = "symbol") => {
-    const seen = new Set();
-    return arr.filter((item) => { const k = item[key]; if (seen.has(k)) return false; seen.add(k); return true; });
-  };
+  // Sort and limit picks/movers
   const kvRsS = (v) => v != null ? (v >= 10 && v <= 15 ? 3 : v >= 5 ? 2 : 1) : 0;
   const kvEmaS = (v) => v != null ? (Math.abs(v) < 0.5 ? 3 : Math.abs(v) < 1.0 ? 2 : 1) : 0;
   const kvRank = (r) => kvRsS(r.relStrengthVsIndex) + kvEmaS(r.ema20Distance) + (r.composite?.tradePlan?.rr || 0) * 0.5;
   const kvTierOrder = { CONSENSUS: 0, BASE_ONLY: 1, ENHANCED_ONLY: 2 };
-  kvPicks = dedup(kvPicks).sort((a, b) => {
+  const kvPicks = [...currentPicksMapped].sort((a, b) => {
     const td = (kvTierOrder[a.tier] ?? 2) - (kvTierOrder[b.tier] ?? 2);
     if (td !== 0) return td;
     return kvRank(b) - kvRank(a);
   }).slice(0, 20);
-  kvMovers = dedup(kvMovers).sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
-  kvHits = dedup(kvHits).sort((a, b) => (b.swing?.total || 0) - (a.swing?.total || 0));
-  kvMrPicks = dedup(kvMrPicks).sort((a, b) => (b.mr?.mrScore || 0) - (a.mr?.mrScore || 0)).slice(0, 10);
-
-  const mergedStats = { ...stats, breadth: mergedBreadth };
+  const kvMovers = [...currentMoversMapped].sort((a, b) => (b.atrMultiple || 0) - (a.atrMultiple || 0));
+  const kvHits = [...currentHitsMapped].sort((a, b) => (b.swing?.total || 0) - (a.swing?.total || 0));
+  const kvMrPicks = [...currentMrPicksMapped].sort((a, b) => (b.mr?.mrScore || 0) - (a.mr?.mrScore || 0)).slice(0, 10);
 
   // Save scan results + TA picks + movers + MR picks (parallel KV writes)
   await Promise.all([
-    env.NCAPITAL_KV.put("scan:results", JSON.stringify({ hits: kvHits, stats: mergedStats }), { expirationTtl: 259200 }),
+    env.NCAPITAL_KV.put("scan:results", JSON.stringify({ hits: kvHits, stats }), { expirationTtl: 259200 }),
     env.NCAPITAL_KV.put("scan:ta-picks", JSON.stringify({
       picks: kvPicks,
       movers: kvMovers,
@@ -2916,10 +2899,9 @@ async function processAndNotify(env, config, allResults) {
         totalScanned: allResults.length, longPicks: kvPicks.length, movers: kvMovers.length,
         mrPicks: kvMrPicks.length,
         unfilteredPicks: unfilteredPicks.length,
-        scanScope,
-        marketRegime: { sp500: usRegime, dax: daxRegime, vix: Math.round(vixPrice * 10) / 10 },
+        marketRegime: { sp500: usRegime, vix: Math.round(vixPrice * 10) / 10 },
         regimeParams: { effective: effectiveRegime, ...regimeParams },
-        filters: [`Score >= ${scoreThreshold}`, `RS 0-${regimeParams.rsMax}%`, `EMA20 < ${regimeParams.ema20Max} ATR`, "ADX > 20", "Index > SMA200 (Bypass: Aktie > eigene SMA200 + RS > 0 + ADX >= 25 + Score+1)", `Max ${regimeParams.sectorMax}/Sektor`],
+        filters: [`Score >= ${scoreThreshold}`, `RS ${["CRISIS","MODERATE_BEAR","TRANSITION"].includes(effectiveRegime) ? "-5" : "0"}-${regimeParams.rsMax}%`, `EMA20 < ${regimeParams.ema20Max} ATR`, "ADX > 20", "Index > SMA200 (Bypass: Aktie > eigene SMA200 + RS > 0 + ADX >= 25 + Score+1)", `Max ${regimeParams.sectorMax}/Sektor`],
       },
       timestamp: new Date().toISOString(),
     }), { expirationTtl: 259200 }),
@@ -2929,7 +2911,7 @@ async function processAndNotify(env, config, allResults) {
   const sma200BypassInfo = sma200Bypassed.length > 0
     ? ` | SMA200-Bypass: ${sma200Bypassed.map(r => r.displaySymbol).join(", ")}`
     : "";
-  console.log(`[Scan] [${scanScope}] Merged: ${allResults.length} scanned, ${kvHits.length} hits, ${kvPicks.length} TA picks (${taPicks.length} new + ${kvPicks.length - currentPicksMapped.length} preserved), ${kvMrPicks.length} MR picks, ${kvMovers.length} movers, ${stats.errors} errors | Regime: ${effectiveRegime}${sma200BypassInfo}`);
+  console.log(`[Scan] ${allResults.length} scanned, ${kvHits.length} hits, ${kvPicks.length} TA picks, ${kvMrPicks.length} MR picks, ${kvMovers.length} movers, ${stats.errors} errors | Regime: ${effectiveRegime}${sma200BypassInfo}`);
 
   // Trade-Setup Scanner (swing >= 78) deaktiviert — ersetzt durch TA-Scanner + Mover Alerts
 
@@ -3175,8 +3157,7 @@ async function sendTelegramMoverAlerts(movers, env) {
       parts.push(`${e} EMA20 ${r.ema20Distance > 0 ? "+" : ""}${r.ema20Distance.toFixed(1)} ATR`);
     }
     if (r.relStrengthVsIndex != null) {
-      const idx = r.symbol?.endsWith?.(".DE") ? "DAX" : "S&P";
-      parts.push(`RS vs ${idx} ${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`);
+      parts.push(`RS vs S&P ${r.relStrengthVsIndex > 0 ? "+" : ""}${r.relStrengthVsIndex.toFixed(1)}%`);
     }
     return parts.length > 0 ? `\n   ${parts.join(" \u{2502} ")}` : "";
   };
@@ -3197,7 +3178,7 @@ async function sendTelegramMoverAlerts(movers, env) {
   }
 
   const header = `\u{1F6A8} <b>${newMovers.length} Aktie${newMovers.length > 1 ? "n" : ""} mit \u{2265}3x ATR Bewegung</b>`;
-  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n")}\n\n<i>Top 100 US + DAX 40 \u{2022} ATR-Mover</i>`;
+  const msg = `${header}\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\n${lines.join("\n")}\n\n<i>S&P 100 \u{2022} ATR-Mover</i>`;
 
   await sendTelegram(msg, env);
   await Promise.all(cooldownWrites);
@@ -3259,7 +3240,7 @@ async function fetchMacroData(env) {
     }
     // Volume analysis for index symbols (from already-fetched data, 0 extra API calls)
     let volumeData = null;
-    const VOLUME_INDICES = ["^GSPC", "^GDAXI", "^DJI", "^IXIC"];
+    const VOLUME_INDICES = ["^GSPC", "^DJI", "^IXIC"];
     if (VOLUME_INDICES.includes(symbol) && parsed5d && parsed5d.candles.length >= 2) {
       const candles5d = parsed5d.candles;
       const lastCandle = candles5d[candles5d.length - 1];
@@ -3380,7 +3361,7 @@ function computeIntermarketSignals(macro) {
 }
 
 function computeSectorRotation(scanResults, region) {
-  const sectorMap = region === "EU" ? DAX_SECTORS : US_SECTORS;
+  const sectorMap = US_SECTORS;
   const sectors = {};
 
   for (const result of scanResults) {
@@ -3467,7 +3448,7 @@ function getSeasonalContext() {
   return {
     month, year,
     monthName: ["", "Januar", "Februar", "Maerz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"][month],
-    monthPattern: { sp500Avg: monthData.sp500 || 0, daxAvg: monthData.dax || 0, note: monthData.note || "" },
+    monthPattern: { sp500Avg: monthData.sp500 || 0, note: monthData.note || "" },
     presidentialCycle: { year: cycleYear, name: cycleData.name || "", sp500Avg: cycleData.sp500Avg || 0, note: cycleData.note || "" },
     midtermNote,
     upcomingEvents,
@@ -3479,7 +3460,7 @@ function getSeasonalContext() {
 function formatBriefingForTelegram(briefing) {
   const messages = [];
   const type = briefing.type;
-  const region = type === "morning" ? "Europa" : "Wall Street";
+  const region = type === "morning" ? "Pre-Market" : "Wall Street";
   const emoji = type === "morning" ? "\u2600\uFE0F" : "\uD83C\uDF19";
   const now = new Date(briefing.generatedAt);
   const weekdays = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
@@ -3636,8 +3617,8 @@ function formatBriefingForTelegram(briefing) {
           msg2 += `\uD83D\uDFE2 <i>Bullish: Dovisher Ton / Zinspause \u2192 Tech + Growth Rally</i>\n`;
           msg2 += `\uD83D\uDD34 <i>Bearish: Hawkisher Ton / Zinserhoehung \u2192 Bonds runter, Dollar hoch</i>\n`;
         } else if (ev.type === "ecb") {
-          msg2 += `\uD83D\uDFE2 <i>Bullish: Zinssenkung \u2192 DAX + EUR-Exporteure profitieren</i>\n`;
-          msg2 += `\uD83D\uDD34 <i>Bearish: Restriktiv \u2192 EUR staerker, DAX unter Druck</i>\n`;
+          msg2 += `\uD83D\uDFE2 <i>Bullish: Zinssenkung \u2192 EUR schwaecher, US-Exporte profitieren</i>\n`;
+          msg2 += `\uD83D\uDD34 <i>Bearish: Restriktiv \u2192 EUR staerker, Kapitalfluss nach Europa</i>\n`;
         } else if (ev.type === "data" && ev.name.includes("CPI")) {
           msg2 += `\uD83D\uDFE2 <i>Bullish: CPI unter Erwartung \u2192 Zinssenkungshoffnung, Risk-On</i>\n`;
           msg2 += `\uD83D\uDD34 <i>Bearish: CPI ueber Erwartung \u2192 Zinsangst, Tech + Growth leiden</i>\n`;
@@ -3669,9 +3650,8 @@ function formatBriefingForTelegram(briefing) {
     msg2 += `\n\uD83D\uDCC8 <b>Saisonaler Kontext</b>\n`;
     if (seasonal.monthPattern) {
       const sp = seasonal.monthPattern.sp500Avg;
-      const dx = seasonal.monthPattern.daxAvg;
       const spIcon = sp > 0.5 ? "\uD83D\uDFE2" : sp < -0.2 ? "\uD83D\uDD34" : "\uD83D\uDFE1";
-      msg2 += `${spIcon} <b>${seasonal.monthName}</b>: S&amp;P hist. ${sp > 0 ? "+" : ""}${Number(sp).toFixed(1)}% \u2502 DAX hist. ${dx > 0 ? "+" : ""}${Number(dx).toFixed(1)}%\n`;
+      msg2 += `${spIcon} <b>${seasonal.monthName}</b>: S&amp;P hist. ${sp > 0 ? "+" : ""}${Number(sp).toFixed(1)}%\n`;
       if (seasonal.monthPattern.note) msg2 += `<i>${esc(seasonal.monthPattern.note)}</i>\n`;
     }
     if (seasonal.presidentialCycle) {
@@ -3736,24 +3716,14 @@ async function generateBriefing(env, type) {
     items: symbols.map(s => ({ name: s.name, symbol: s.symbol, ...(macro[s.symbol] || { price: 0, change: 0, error: "Keine Daten" }) })),
   }));
 
-  // 5. Region-specific content (Sektoren + Hits), but Trade-Setups from ALL markets
-  let regionFocus, scannerHits, sectorRotation;
-  if (type === "morning") {
-    regionFocus = "EU";
-    const daxResults = scanResults.filter(r => r.symbol.endsWith(".DE"));
-    scannerHits = daxResults.slice(0, 15);
-    sectorRotation = computeSectorRotation(daxResults, "EU");
-  } else {
-    regionFocus = "US";
-    const usResults = scanResults.filter(r => !r.symbol.endsWith(".DE"));
-    scannerHits = usResults.slice(0, 15);
-    sectorRotation = computeSectorRotation(usResults, "US");
-  }
-  // Trade-Setups: beste aus ALLEN Maerkten (unabhaengig von Region)
+  // 5. Scanner hits + sector rotation (US-only)
+  const regionFocus = "US";
+  const scannerHits = scanResults.slice(0, 15);
+  const sectorRotation = computeSectorRotation(scanResults, "US");
   const tradeSetups = generateTradeSetups(scanResults, 5);
 
   // 6. Compute volume/liquidity overview for indices
-  const VOLUME_INDEX_SYMS = ["^GSPC", "^GDAXI", "^DJI", "^IXIC"];
+  const VOLUME_INDEX_SYMS = ["^GSPC", "^DJI", "^IXIC"];
   const volumeOverview = VOLUME_INDEX_SYMS
     .map(sym => {
       const m = macro[sym];
@@ -4121,7 +4091,6 @@ async function handleScanRoutes(url, request, env) {
       totalChunks: s.totalChunks || Math.ceil(liveSymbols.length / chunkSize),
       totalSymbols: s.totalSymbols || liveSymbols.length,
       sp100Count: SP100_SYMBOLS.length,
-      dax40Count: DAX40_SYMBOLS.length,
       scanMode: s.mode || liveMode,
       liveMode,
       lastRun: s.lastRun,

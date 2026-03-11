@@ -114,7 +114,7 @@ function parseYahooResponse(json) {
 
 /**
  * Holt OHLCV-Daten fuer ein Symbol.
- * @param {string} symbol - Ticker (z.B. "AAPL", "SAP.DE", "^GSPC")
+ * @param {string} symbol - Ticker (z.B. "AAPL", "^GSPC")
  * @param {string} range - Zeitraum ("1y", "6mo", "2y", etc.)
  * @param {string} interval - Intervall ("1d", "1wk", etc.)
  * @returns {Promise<{candles: Array, meta: Object, stale: boolean}>}
@@ -156,14 +156,11 @@ export async function fetchOHLCV(symbol, range = "1y", interval = "1d") {
 }
 
 /**
- * Holt Leitindex-Daten basierend auf der Waehrung.
- * USD → S&P 500 (^GSPC), EUR → DAX (^GDAXI)
+ * Holt Leitindex-Daten (S&P 500).
  */
 export async function fetchIndexData(currency) {
-  const symbol = currency === "USD" ? "^GSPC" : "^GDAXI";
-  const indexName = currency === "USD" ? "S&P 500" : "DAX";
-  const result = await fetchOHLCV(symbol, "1y", "1d");
-  return { ...result, indexName, indexSymbol: symbol };
+  const result = await fetchOHLCV("^GSPC", "1y", "1d");
+  return { ...result, indexName: "S&P 500", indexSymbol: "^GSPC" };
 }
 
 /**

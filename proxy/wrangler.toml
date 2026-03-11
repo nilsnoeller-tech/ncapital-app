@@ -10,7 +10,11 @@ binding = "NCAPITAL_KV"
 id = "e3bd78d6bea04ccfb89c71d699046b6c"
 
 [triggers]
-crons = ["*/2 9-22 * * 1-5"]
+# UTC range covering NYSE + Telegram briefings across DST:
+# Morning briefing: 08:24 CET → 06:24 UTC (summer) / 07:24 UTC (winter)
+# NYSE scan:        9:30-16:30 ET → 13:30-20:30 UTC (summer) / 14:30-21:30 UTC (winter)
+# getActiveSymbols() handles exact DST-aware market hours
+crons = ["*/2 6-21 * * 1-5"]
 
 # Secrets (set via `npx wrangler secret put`):
 # JWT_SECRET         — HMAC-SHA256 Signing Key fuer JWT-Token

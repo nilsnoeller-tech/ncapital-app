@@ -1,5 +1,5 @@
 // ─── Briefing Component ───
-// Taeglich automatisierte Markt-Briefings: Morning (08:30, DAX/EU) und Afternoon (15:00, US)
+// Taeglich automatisierte Markt-Briefings: Morning (08:30, Pre-Market) und Afternoon (15:00, US)
 
 import React, { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Sun, Moon, TrendingUp, TrendingDown, Minus, AlertTriangle, BarChart3, Target, Clock } from "lucide-react";
@@ -175,7 +175,7 @@ export default function Briefing({ onNavigate, portfolio }) {
                 {activeTab === "morning" ? "Morning Briefing" : "Afternoon Briefing"}
               </h2>
               <span style={{ color: C.textMuted, fontSize: 12 }}>
-                {activeTab === "morning" ? "08:30 \u2022 DAX & Europa" : "15:00 \u2022 Wall Street & US"}
+                {activeTab === "morning" ? "08:30 \u2022 Pre-Market Overview" : "15:00 \u2022 Wall Street & US"}
                 {briefing ? ` \u2022 Erstellt: ${fmtTime(briefing.generatedAt)}` : ""}
               </span>
             </div>
@@ -219,7 +219,7 @@ export default function Briefing({ onNavigate, portfolio }) {
             <FuturesSection futures={briefing.futures} isMobile={isMobile} />
           )}
 
-          {/* ── Indizes (S&P 500, DAX etc.) ── */}
+          {/* ── Indizes (S&P 500, Dow, Nasdaq) ── */}
           <IndicesSection macro={briefing.macroOverview} isMobile={isMobile} />
 
           {/* ── Intermarket-Signale ── */}
@@ -818,7 +818,6 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment, por
   const rp = stats?.regimeParams;
   const bullishRegimes = ["STRONG_BULL", "MODERATE_BULL", "bullish"];
   const sp500Bull = bullishRegimes.includes(regime?.sp500);
-  const daxBull = bullishRegimes.includes(regime?.dax);
 
   // Portfolio-aware position sizing (nur wenn Startkapital explizit in Einstellungen gesetzt)
   const hasPortfolio = portfolio && portfolio.kapital > 0 && portfolio.startkapitalExplicit;
@@ -883,14 +882,6 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment, por
             border: `1px solid ${sp500Bull ? C.green : C.red}25`,
           }}>
             S&P 500 {sp500Bull ? "\u2713 \u00fcber" : "\u2717 unter"} SMA200
-          </span>
-          <span style={{
-            fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
-            color: daxBull ? C.green : C.red,
-            background: `${daxBull ? C.green : C.red}12`,
-            border: `1px solid ${daxBull ? C.green : C.red}25`,
-          }}>
-            DAX {daxBull ? "\u2713 \u00fcber" : "\u2717 unter"} SMA200
           </span>
           {rp?.effective && (
             <span style={{
@@ -1111,7 +1102,7 @@ function TAPicksSection({ picks, stats, isMobile, onNavigate, newsSentiment, por
                       background: `${r.relStrengthVsIndex > 0 ? C.green : r.relStrengthVsIndex < -3 ? C.red : C.textDim}10`,
                       borderRadius: 5, padding: "2px 6px",
                     }}>
-                      RS vs {r.currency === "EUR" ? "DAX" : "S&P"} {r.relStrengthVsIndex > 0 ? "+" : ""}{r.relStrengthVsIndex.toFixed(1)}%
+                      RS vs S&P {r.relStrengthVsIndex > 0 ? "+" : ""}{r.relStrengthVsIndex.toFixed(1)}%
                     </span>
                   )}
                 </div>

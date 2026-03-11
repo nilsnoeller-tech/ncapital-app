@@ -18,7 +18,6 @@ const C = {
 const PRESETS = {
   "US Large Cap": ["AAPL", "MSFT", "NVDA", "AVGO", "META", "AMZN", "GOOG", "TSLA", "AMD", "CRM"],
   "US Growth": ["PLTR", "CRWD", "SNOW", "DDOG", "NET", "SHOP", "COIN", "MSTR", "SOFI", "AFRM"],
-  "DAX": ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BAS.DE", "MBG.DE", "BMW.DE", "ADS.DE", "IFX.DE", "MRK.DE"],
 };
 
 const STORAGE_KEY = "ncapital-watchlist";
@@ -103,7 +102,6 @@ function TAPicksTab({ isMobile, onNavigate }) {
   const rp = stats?.regimeParams;
   const bullishRegimes = ["STRONG_BULL", "MODERATE_BULL", "bullish"];
   const sp500Bull = bullishRegimes.includes(regime?.sp500);
-  const daxBull = bullishRegimes.includes(regime?.dax);
 
   // Tier counts for summary
   const tierCounts = { CONSENSUS: 0, BASE_ONLY: 0, ENHANCED_ONLY: 0 };
@@ -154,14 +152,6 @@ function TAPicksTab({ isMobile, onNavigate }) {
               border: `1px solid ${sp500Bull ? C.green : C.red}25`,
             }}>
               S&P 500 {sp500Bull ? "\u2713 \u00FCber" : "\u2717 unter"} SMA200
-            </span>
-            <span style={{
-              fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 8px",
-              color: daxBull ? C.green : C.red,
-              background: `${daxBull ? C.green : C.red}12`,
-              border: `1px solid ${daxBull ? C.green : C.red}25`,
-            }}>
-              DAX {daxBull ? "\u2713 \u00FCber" : "\u2717 unter"} SMA200
             </span>
             {rp?.effective && (
               <span style={{
@@ -329,7 +319,7 @@ function TAPicksTab({ isMobile, onNavigate }) {
                       background: `${r.relStrengthVsIndex > 0 ? C.green : r.relStrengthVsIndex < -3 ? C.red : C.textDim}10`,
                       borderRadius: 5, padding: "2px 6px",
                     }}>
-                      RS vs {r.currency === "EUR" ? "DAX" : "S&P"} {r.relStrengthVsIndex > 0 ? "+" : ""}{r.relStrengthVsIndex.toFixed(1)}%
+                      RS vs S&P {r.relStrengthVsIndex > 0 ? "+" : ""}{r.relStrengthVsIndex.toFixed(1)}%
                     </span>
                   )}
                 </div>

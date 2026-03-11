@@ -2593,9 +2593,7 @@ export default function TradingJournal() {
             {/* Saisonale Einordnung Widget */}
             {seasonalData && (() => {
               const sp = typeof seasonalData.monthPattern?.sp500Avg === "string" ? parseFloat(seasonalData.monthPattern.sp500Avg) : seasonalData.monthPattern?.sp500Avg;
-              const dx = typeof seasonalData.monthPattern?.daxAvg === "string" ? parseFloat(seasonalData.monthPattern.daxAvg) : seasonalData.monthPattern?.daxAvg;
               const spC = sp > 0.5 ? C.green : sp < -0.2 ? C.red : C.yellow;
-              const dxC = dx > 0.5 ? C.green : dx < -0.2 ? C.red : C.yellow;
               return (
                 <div onClick={() => setPage("briefing")} style={{ padding: "10px 12px", borderRadius: 12, background: `${C.accent}08`, border: `1px solid ${C.accent}15`, marginBottom: 10, cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
@@ -2607,10 +2605,6 @@ export default function TradingJournal() {
                     <div>
                       <span style={{ fontSize: 9, color: C.textDim }}>S&P </span>
                       <span style={{ fontSize: 12, fontWeight: 700, color: spC, fontFamily: "monospace" }}>{sp > 0 ? "+" : ""}{typeof sp === "number" ? sp.toFixed(1) : sp}%</span>
-                    </div>
-                    <div>
-                      <span style={{ fontSize: 9, color: C.textDim }}>DAX </span>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: dxC, fontFamily: "monospace" }}>{dx > 0 ? "+" : ""}{typeof dx === "number" ? dx.toFixed(1) : dx}%</span>
                     </div>
                   </div>
                   {seasonalData.presidentialCycle && (
